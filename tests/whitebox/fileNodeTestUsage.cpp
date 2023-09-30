@@ -1,3 +1,22 @@
+////////////////////////////////////////////////////////////////////////////
+//  Copyright (C) 2014-2021 by Alexander Galanin                          //
+//  al@galanin.nnov.ru                                                    //
+//  http://galanin.nnov.ru/~al                                            //
+//                                                                        //
+//  This program is free software: you can redistribute it and/or modify  //
+//  it under the terms of the GNU General Public License as published by  //
+//  the Free Software Foundation, either version 3 of the License, or     //
+//  (at your option) any later version.                                   //
+//                                                                        //
+//  This program is distributed in the hope that it will be useful,       //
+//  but WITHOUT ANY WARRANTY; without even the implied warranty of        //
+//  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the         //
+//  GNU General Public License for more details.                          //
+//                                                                        //
+//  You should have received a copy of the GNU General Public License     //
+//  along with this program.  If not, see <https://www.gnu.org/licenses/>.//
+////////////////////////////////////////////////////////////////////////////
+
 #include "../config.h"
 
 #include <zip.h>
@@ -79,13 +98,32 @@ const char *zip_strerror(struct zip *) {
     return NULL;
 }
 
+const char *zip_get_archive_comment(zip_t *, int *, zip_flags_t) {
+    return NULL;
+}
+
+int zip_set_archive_comment(zip_t *, const char *, zip_uint16_t) {
+    assert(false);
+    return 0;
+}
+
+const char *zip_file_get_comment(zip_t *, zip_uint64_t, zip_uint32_t *, zip_flags_t) {
+    return NULL;
+}
+
+int zip_file_set_comment(zip_t *, zip_uint64_t, const char *, zip_uint16_t, zip_flags_t) {
+    assert(false);
+    return 0;
+}
+
 // tests
 
 /**
  * Test parse_name()
  */
 void parseNameTest () {
-    auto_ptr<FileNode> n (FileNode::createRootNode());
+    struct zip zip;
+    unique_ptr<FileNode> n (FileNode::createRootNode(&zip));
 
     n->full_name = "test";
     n->parse_name ();
@@ -118,20 +156,20 @@ void parseNameTest () {
 void parentNameTest () {
     // files
     {
-        auto_ptr<FileNode> n (FileNode::createFile(NULL, "test", 0, 0, 0666));
+        unique_ptr<FileNode> n (FileNode::createFile(NULL, "test", 0, 0, 0666));
         assert (n->getParentName() == "");
     }
     {
-        auto_ptr<FileNode> n (FileNode::createFile(NULL, "dir/file", 0, 0, 0666));
+        unique_ptr<FileNode> n (FileNode::createFile(NULL, "dir/file", 0, 0, 0666));
         assert (n->getParentName() == "dir");
     }
     {
-        auto_ptr<FileNode> n (FileNode::createFile(NULL, "dir/dir2/file", 0, 0, 0666));
+        unique_ptr<FileNode> n (FileNode::createFile(NULL, "dir/dir2/file", 0, 0, 0666));
         assert (n->getParentName() == "dir/dir2");
     }
     // directories
     {
-        auto_ptr<FileNode> n (FileNode::createIntermediateDir(NULL, "dir/subdir/"));
+        unique_ptr<FileNode> n (FileNode::createIntermediateDir(NULL, "dir/subdir/"));
         assert (n->getParentName() == "dir");
     }
 }

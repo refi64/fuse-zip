@@ -5,15 +5,34 @@ Tcl >= 8.5
 tcllib >= 1.10
 BLT
 Tclx
-zip
+attr
 diff
+socat
+sudo (optional)
 valgrind
+unzip
+zip
+zipinfo
 
 To run testsuite invoke command
 $ ./fuse-zip.test
 or
 $ ./fuse-zip.test -valgrind
 to check memory errors with valgrind.
+
+Some tests require root access. To run them use -sudo flag and configure
+sudoers in NOPASSWD mode (don't do this unless you are really know all security
+impacts!):
+    user ALL=(ALL:ALL) NOPASSWD: /bin/mknod /tmp/fuse-zip-tests-[0-9]*/mountPoint-special-device-create/block b 8 255
+    user ALL=(ALL:ALL) NOPASSWD: /bin/mknod /tmp/fuse-zip-tests-[0-9]*/mountPoint-special-device-create/char c 4 63
+    user ALL=(ALL:ALL) NOPASSWD: /bin/chmod -R u+w /tmp/fuse-zip-tests-[0-9]*
+    user ALL=(ALL:ALL) NOPASSWD: /bin/rm -rf /tmp/fuse-zip-tests-[0-9]*
+and enable user_allow_other option in /etc/fuse.conf.
+
+In order to test pkzip compatibility you need to install pkzipc and configure sudo:
+    user ALL=(ALL:ALL) NOPASSWD: /path/to/pkzipc -extract -filetype=all /tmp/fuse-zip-tests-[0-9]*/test.zip
+    user ALL=(ALL:ALL) NOPASSWD: /bin/rm -rf /tmp/fuse-zip-tests-[0-9]*/extract
+    user ALL=(ALL:ALL) NOPASSWD: /bin/chown 0:0 /tmp/fuse-zip-tests-[0-9]*/regular
 
 Additional options can be passed to valgrind using VALGRIND_ARGS environment
 variable. For example, you can ask valgrind to generate suppressions (that can

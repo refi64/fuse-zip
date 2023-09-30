@@ -1,33 +1,34 @@
 ////////////////////////////////////////////////////////////////////////////
-//  Copyright (C) 2008-2014 by Alexander Galanin                          //
+//  Copyright (C) 2008-2019 by Alexander Galanin                          //
 //  al@galanin.nnov.ru                                                    //
 //  http://galanin.nnov.ru/~al                                            //
 //                                                                        //
-//  This program is free software; you can redistribute it and/or modify  //
-//  it under the terms of the GNU Lesser General Public License as        //
-//  published by the Free Software Foundation; either version 3 of the    //
-//  License, or (at your option) any later version.                       //
+//  This program is free software: you can redistribute it and/or modify  //
+//  it under the terms of the GNU General Public License as published by  //
+//  the Free Software Foundation, either version 3 of the License, or     //
+//  (at your option) any later version.                                   //
 //                                                                        //
 //  This program is distributed in the hope that it will be useful,       //
 //  but WITHOUT ANY WARRANTY; without even the implied warranty of        //
 //  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the         //
 //  GNU General Public License for more details.                          //
 //                                                                        //
-//  You should have received a copy of the GNU Lesser General Public      //
-//  License along with this program; if not, write to the                 //
-//  Free Software Foundation, Inc.,                                       //
-//  51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA               //
+//  You should have received a copy of the GNU General Public License     //
+//  along with this program.  If not, see <https://www.gnu.org/licenses/>.//
 ////////////////////////////////////////////////////////////////////////////
 
 #ifndef FILE_NODE_H
 #define FILE_NODE_H
 
+#include <memory>
 #include <string>
+
 #include <unistd.h>
 #include <sys/stat.h>
 
 #include "types.h"
 #include "bigBuffer.h"
+#include "dataNode.h"
 
 class FileNode {
 friend class FuseZipData;
@@ -36,34 +37,23 @@ private:
     FileNode (const FileNode &);
     FileNode &operator= (const FileNode &);
 
-    enum nodeState {
-        CLOSED,
-        OPENED,
-        CHANGED,
-        NEW,
-        NEW_DIR
-    };
+    zip_int64_t _id;
+    std::shared_ptr<DataNode> _data;
+    nlink_t _numDirLinks = 0;
 
-    BigBuffer *buffer;
     struct zip *zip;
-    int open_count;
-    nodeState state;
 
-    zip_uint64_t m_size;
-    bool has_cretime, metadataChanged;
-    mode_t m_mode;
-    time_t m_mtime, m_atime, m_ctime, cretime;
-    uid_t m_uid;
-    gid_t m_gid;
+    const char *m_comment;
+    uint16_t m_commentLen;
+    bool m_commentChanged;
 
     void parse_name();
-    void processExtraFields();
-    void processExternalAttributes();
-    int updateExtraFields() const;
+    void readComment();
+    int updateExtraFields(bool force_precise_time) const;
     int updateExternalAttributes() const;
 
-    static const zip_int64_t ROOT_NODE_INDEX, NEW_NODE_INDEX;
-    FileNode(struct zip *zip, const char *fname, zip_int64_t id);
+    static const zip_int64_t ROOT_NODE_INDEX, NEW_NODE_INDEX, TMP_DIR_INDEX;
+    FileNode(struct zip *zip, const char *fname, zip_int64_t id, std::shared_ptr<DataNode> data);
 
 protected:
     static FileNode *createIntermediateDir(struct zip *zip, const char *fname);
@@ -73,7 +63,7 @@ public:
      * Create new regular file
      */
     static FileNode *createFile(struct zip *zip, const char *fname,
-            uid_t owner, gid_t group, mode_t mode);
+            uid_t owner, gid_t group, mode_t mode, dev_t dev = 0);
     /**
      * Create new symbolic link
      */
@@ -86,14 +76,26 @@ public:
     /**
      * Create root pseudo-node for file system
      */
-    static FileNode *createRootNode();
+    static FileNode *createRootNode(struct zip *zip);
     /**
      * Create node for existing ZIP file entry
      */
     static FileNode *createNodeForZipEntry(struct zip *zip,
-            const char *fname, zip_int64_t id);
+            const char *fname, zip_int64_t id, mode_t mode);
+    /**
+     * Create hardlink to another node
+     */
+    static FileNode *createHardlink(struct zip *zip,
+            const char *fname, zip_int64_t id, FileNode *target);
     ~FileNode();
-    
+
+    /**
+     * return a pointer to data structure
+     */
+    DataNode *data() {
+        return _data.get();
+    }
+
     /**
      * add child node to list
      */
@@ -110,12 +112,12 @@ public:
     void rename (const char *new_name);
 
     int open();
-    int read(char *buf, size_t size, zip_uint64_t offset);
-    int write(const char *buf, size_t size, zip_uint64_t offset);
+    int read(char *buf, size_t size, size_t offset);
+    int write(const char *buf, size_t size, size_t offset);
     int close();
 
     /**
-     * Invoke zip_add() or zip_replace() for file to save it.
+     * Invoke zip_file_add() or zip_file_replace() for file to save it.
      * Should be called only if item is needed to ba saved into zip file.
      *
      * @return 0 if success, != 0 on error
@@ -124,9 +126,16 @@ public:
 
     /**
      * Save file metadata to ZIP
+     * @param force_precise_time force creation of NTFS extra field
      * @return libzip error code or 0 on success
      */
-    int saveMetadata () const;
+    int saveMetadata (bool force_precise_time) const;
+
+    /**
+     * Save file or archive comment into ZIP
+     * @return libzip error code or 0 on success
+     */
+    int saveComment() const;
 
     /**
      * Truncate file.
@@ -137,18 +146,18 @@ public:
      *      EIO     If insufficient memory available (because ENOMEM not
      *              listed in truncate() error codes)
      */
-    int truncate(zip_uint64_t offset);
+    int truncate(size_t offset);
 
     inline bool isChanged() const {
-        return state == CHANGED || state == NEW;
+        return _data->isChanged();
     }
 
     inline bool isMetadataChanged() const {
-        return metadataChanged;
+        return _data->isMetadataChanged();
     }
 
     inline bool isTemporaryDir() const {
-        return (state == NEW_DIR) && (id == NEW_NODE_INDEX);
+        return _id == TMP_DIR_INDEX;
     }
 
     /**
@@ -156,24 +165,28 @@ public:
      */
     void chmod (mode_t mode);
     inline mode_t mode() const {
-        return m_mode;
+        return _data->mode();
+    }
+
+    inline dev_t device() const {
+        return _data->device();
     }
 
     /**
      * set atime and mtime
      */
-    void setTimes (time_t atime, time_t mtime);
+    void setTimes (const timespec &atime, const timespec &mtime);
 
-    void setCTime (time_t ctime);
+    void setCTime (const timespec &ctime);
 
-    inline time_t atime() const {
-        return m_atime;
+    inline struct timespec atime() const {
+        return _data->atime();
     }
-    inline time_t ctime() const {
-        return m_ctime;
+    inline struct timespec ctime() const {
+        return _data->ctime();
     }
-    inline time_t mtime() const {
-        return m_mtime;
+    inline struct timespec mtime() const {
+        return _data->mtime();
     }
 
     /**
@@ -182,7 +195,7 @@ public:
     //TODO: rewrite without memory allocation
     inline std::string getParentName () const {
         if (name > full_name.c_str()) {
-            return std::string (full_name, 0, name - full_name.c_str() - 1);
+            return std::string (full_name, 0, static_cast<size_t>(name - full_name.c_str() - 1));
         } else {
             return "";
         }
@@ -194,18 +207,34 @@ public:
     void setUid (uid_t uid);
     void setGid (gid_t gid);
     inline uid_t uid () const {
-        return m_uid;
+        return _data->uid();
     }
     inline gid_t gid () const {
-        return m_gid;
+        return _data->gid();
     }
 
     zip_uint64_t size() const;
 
+    bool present_in_zip() const { return _id >= 0; }
+    zip_uint64_t id() const { return static_cast<zip_uint64_t>(_id); }
+
+    void set_id(zip_int64_t id_) {
+        _id = id_;
+        // called only from FuseZipData::save, so we're don't worry about 'status' variable value
+    }
+
+    bool is_dir() const;
+    long use_count() const { return _data.use_count(); }
+    nlink_t num_dir_links() const { return _numDirLinks; }
+
+    bool hasComment() const { return m_comment != NULL; }
+    bool isCommentChanged() const { return m_commentChanged; }
+    bool setComment(const char *value, uint16_t length);
+    const char *getComment() const { return m_comment; }
+    uint16_t getCommentLength() const { return m_commentLen; }
+
     const char *name;
     std::string full_name;
-    bool is_dir;
-    zip_int64_t id;
     nodelist_t childs;
     FileNode *parent;
 };

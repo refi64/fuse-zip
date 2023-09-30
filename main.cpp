@@ -1,39 +1,50 @@
 ////////////////////////////////////////////////////////////////////////////
-//  Copyright (C) 2008-2014 by Alexander Galanin                          //
+//  Copyright (C) 2008-2019 by Alexander Galanin                          //
 //  al@galanin.nnov.ru                                                    //
 //  http://galanin.nnov.ru/~al                                            //
 //                                                                        //
-//  This program is free software; you can redistribute it and/or modify  //
-//  it under the terms of the GNU Lesser General Public License as        //
-//  published by the Free Software Foundation; either version 3 of the    //
-//  License, or (at your option) any later version.                       //
+//  This program is free software: you can redistribute it and/or modify  //
+//  it under the terms of the GNU General Public License as published by  //
+//  the Free Software Foundation, either version 3 of the License, or     //
+//  (at your option) any later version.                                   //
 //                                                                        //
 //  This program is distributed in the hope that it will be useful,       //
 //  but WITHOUT ANY WARRANTY; without even the implied warranty of        //
 //  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the         //
 //  GNU General Public License for more details.                          //
 //                                                                        //
-//  You should have received a copy of the GNU Lesser General Public      //
-//  License along with this program; if not, write to the                 //
-//  Free Software Foundation, Inc.,                                       //
-//  51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA               //
+//  You should have received a copy of the GNU General Public License     //
+//  along with this program.  If not, see <https://www.gnu.org/licenses/>.//
 ////////////////////////////////////////////////////////////////////////////
 
 #define KEY_HELP (0)
 #define KEY_VERSION (1)
 #define KEY_RO (2)
+#define KEY_FORCE_PRECISE_TIME (3)
 
 #include "config.h"
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
+
 #include <fuse.h>
 #include <fuse_opt.h>
+
+#pragma GCC diagnostic pop
+
+#include <libgen.h>
 #include <limits.h>
 #include <syslog.h>
 
+#include <cassert>
 #include <cerrno>
 
 #include "fuse-zip.h"
 #include "fuseZipData.h"
+
+#if (LIBZIP_VERSION_MAJOR < 1)
+    #error "libzip >= 1.0 is required!"
+#endif
 
 /**
  * Print usage information
@@ -56,6 +67,7 @@ void print_usage() {
  */
 void print_version() {
     fprintf(stderr, "%s version: %s\n", PROGRAM, VERSION);
+    fprintf(stderr, "libzip version: %s\n", LIBZIP_VERSION);
 }
 
 /**
@@ -72,6 +84,8 @@ struct fusezip_param {
     const char *fileName;
     // read-only flag
     bool readonly;
+    // force precise time
+    bool force_precise_time;
 };
 
 /**
@@ -84,7 +98,7 @@ struct fusezip_param {
  * @return -1 on error, 0 if arg is to be discarded, 1 if arg should be kept
  */
 static int process_arg(void *data, const char *arg, int key, struct fuse_args *outargs) {
-    struct fusezip_param *param = (fusezip_param*)data;
+    struct fusezip_param *param = static_cast<fusezip_param*>(data);
 
     (void)outargs;
 
@@ -109,6 +123,11 @@ static int process_arg(void *data, const char *arg, int key, struct fuse_args *o
         case KEY_RO: {
             param->readonly = true;
             return KEEP;
+        }
+
+        case KEY_FORCE_PRECISE_TIME: {
+            param->force_precise_time = true;
+            return DISCARD;
         }
 
         case FUSE_OPT_KEY_NONOPT: {
@@ -136,13 +155,39 @@ static int process_arg(void *data, const char *arg, int key, struct fuse_args *o
     }
 }
 
+/**
+ * Check that we can write results to an archive file:
+ * * file must be writable;
+ * * parent directory must be writable (because the last step of archive saving
+ *   is rename-and-replace).
+ */
+bool isFileWritable(const char *fileName) {
+    bool writable = true;
+    if (access(fileName, F_OK) == 0 && access(fileName, W_OK) != 0) {
+        // file exists but not writable
+        writable = false;
+    } else {
+        char *fileNameDup = strdup(fileName);
+        if (fileNameDup == NULL)
+            throw std::bad_alloc();
+        const char *dirName = dirname(fileNameDup);
+        if (access(dirName, F_OK) == 0 && access(dirName, W_OK) != 0) {
+            // parent directory is not writable
+            writable = false;
+        }
+        free(fileNameDup);
+    }
+    return writable;
+}
+
 static const struct fuse_opt fusezip_opts[] = {
-    FUSE_OPT_KEY("-h",          KEY_HELP),
-    FUSE_OPT_KEY("--help",      KEY_HELP),
-    FUSE_OPT_KEY("-V",          KEY_VERSION),
-    FUSE_OPT_KEY("--version",   KEY_VERSION),
-    FUSE_OPT_KEY("-r",          KEY_RO),
-    FUSE_OPT_KEY("ro",          KEY_RO),
+    FUSE_OPT_KEY("-h",                  KEY_HELP),
+    FUSE_OPT_KEY("--help",              KEY_HELP),
+    FUSE_OPT_KEY("-V",                  KEY_VERSION),
+    FUSE_OPT_KEY("--version",           KEY_VERSION),
+    FUSE_OPT_KEY("-r",                  KEY_RO),
+    FUSE_OPT_KEY("ro",                  KEY_RO),
+    FUSE_OPT_KEY("force_precise_time",  KEY_FORCE_PRECISE_TIME),
     {NULL, 0, 0}
 };
 
@@ -157,6 +202,7 @@ int main(int argc, char *argv[]) {
     param.help = false;
     param.version = false;
     param.readonly = false;
+    param.force_precise_time = false;
     param.strArgCount = 0;
     param.fileName = NULL;
 
@@ -180,8 +226,18 @@ int main(int argc, char *argv[]) {
             return EXIT_FAILURE;
         }
 
+        if (!param.readonly && !isFileWritable(param.fileName)) {
+            assert(args.allocated && "FUSE args must be reallocated because at least one argument (archive file name) is discarded in [process_arg]");
+            // add -r flag to make file system read-only
+            if (fuse_opt_add_arg(&args, "-r") != 0) {
+                fuse_opt_free_args(&args);
+                return EXIT_FAILURE;
+            }
+            param.readonly = true;
+        }
+
         openlog(PROGRAM, LOG_PID, LOG_USER);
-        if ((data = initFuseZip(PROGRAM, param.fileName, param.readonly))
+        if ((data = initFuseZip(PROGRAM, param.fileName, param.readonly, param.force_precise_time))
                 == NULL) {
             fuse_opt_free_args(&args);
             return EXIT_FAILURE;
@@ -203,6 +259,7 @@ int main(int argc, char *argv[]) {
     fusezip_oper.mkdir      =   fusezip_mkdir;
     fusezip_oper.rename     =   fusezip_rename;
     fusezip_oper.create     =   fusezip_create;
+    fusezip_oper.mknod      =   fusezip_mknod;
     fusezip_oper.chmod      =   fusezip_chmod;
     fusezip_oper.chown      =   fusezip_chown;
     fusezip_oper.flush      =   fusezip_flush;
@@ -224,6 +281,9 @@ int main(int argc, char *argv[]) {
 #if FUSE_VERSION >= 28
     // don't allow NULL path
     fusezip_oper.flag_nullpath_ok = 0;
+#   if FUSE_VERSION == 29
+    fusezip_oper.flag_utime_omit_ok = 1;
+#   endif
 #endif
 
     struct fuse *fuse;

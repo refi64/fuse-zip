@@ -1,22 +1,20 @@
 ////////////////////////////////////////////////////////////////////////////
-//  Copyright (C) 2008-2014 by Alexander Galanin                          //
+//  Copyright (C) 2008-2019 by Alexander Galanin                          //
 //  al@galanin.nnov.ru                                                    //
 //  http://galanin.nnov.ru/~al                                            //
 //                                                                        //
-//  This program is free software; you can redistribute it and/or modify  //
-//  it under the terms of the GNU Lesser General Public License as        //
-//  published by the Free Software Foundation; either version 3 of the    //
-//  License, or (at your option) any later version.                       //
+//  This program is free software: you can redistribute it and/or modify  //
+//  it under the terms of the GNU General Public License as published by  //
+//  the Free Software Foundation, either version 3 of the License, or     //
+//  (at your option) any later version.                                   //
 //                                                                        //
 //  This program is distributed in the hope that it will be useful,       //
 //  but WITHOUT ANY WARRANTY; without even the implied warranty of        //
 //  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the         //
 //  GNU General Public License for more details.                          //
 //                                                                        //
-//  You should have received a copy of the GNU Lesser General Public      //
-//  License along with this program; if not, write to the                 //
-//  Free Software Foundation, Inc.,                                       //
-//  51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA               //
+//  You should have received a copy of the GNU General Public License     //
+//  along with this program.  If not, see <https://www.gnu.org/licenses/>.//
 ////////////////////////////////////////////////////////////////////////////
 
 #ifndef FUSE_ZIP_H
@@ -33,10 +31,13 @@ extern "C" {
  *
  * @param program   Program name
  * @param fileName  ZIP file name
+ * @param readonly  Open in read-only mode
+ * @param force_precise_time Force creation of precise time extended attributes
+ *                           even if btime is not known.
  * @return NULL if an error occured, otherwise pointer to FuseZipData structure.
  */
 class FuseZipData *initFuseZip(const char *program, const char *fileName,
-        bool readonly);
+        bool readonly, bool force_precise_time);
 
 /**
  * Initialize filesystem
@@ -65,6 +66,8 @@ int fusezip_statfs(const char *path, struct statvfs *buf);
 int fusezip_open(const char *path, struct fuse_file_info *fi);
 
 int fusezip_create(const char *path, mode_t mode, struct fuse_file_info *fi);
+
+int fusezip_mknod(const char *path, mode_t mode, dev_t dev);
 
 int fusezip_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi);
 

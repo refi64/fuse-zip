@@ -1,29 +1,31 @@
 ////////////////////////////////////////////////////////////////////////////
-//  Copyright (C) 2008-2016 by Alexander Galanin                          //
+//  Copyright (C) 2008-2019 by Alexander Galanin                          //
 //  al@galanin.nnov.ru                                                    //
 //  http://galanin.nnov.ru/~al                                            //
 //                                                                        //
-//  This program is free software; you can redistribute it and/or modify  //
-//  it under the terms of the GNU Lesser General Public License as        //
-//  published by the Free Software Foundation; either version 3 of the    //
-//  License, or (at your option) any later version.                       //
+//  This program is free software: you can redistribute it and/or modify  //
+//  it under the terms of the GNU General Public License as published by  //
+//  the Free Software Foundation, either version 3 of the License, or     //
+//  (at your option) any later version.                                   //
 //                                                                        //
 //  This program is distributed in the hope that it will be useful,       //
 //  but WITHOUT ANY WARRANTY; without even the implied warranty of        //
 //  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the         //
 //  GNU General Public License for more details.                          //
 //                                                                        //
-//  You should have received a copy of the GNU Lesser General Public      //
-//  License along with this program; if not, write to the                 //
-//  Free Software Foundation, Inc.,                                       //
-//  51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA               //
+//  You should have received a copy of the GNU General Public License     //
+//  along with this program.  If not, see <https://www.gnu.org/licenses/>.//
 ////////////////////////////////////////////////////////////////////////////
 
+#include <cassert>
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
-#include <string>
+#include <limits>
 #include <stdexcept>
+#include <string>
+
+#include <limits.h>
 #include <syslog.h>
 
 #include "bigBuffer.h"
@@ -100,7 +102,7 @@ public:
      * @return  Number of bytes actually read. It can differ with 'count'
      *      if offset+count>chunkSize.
      */
-    size_t read(char *dest, zip_uint64_t offset, size_t count) const {
+    size_t read(char *dest, unsigned int offset, size_t count) const {
         if (offset + count > chunkSize) {
             count = chunkSize - offset;
         }
@@ -126,7 +128,7 @@ public:
      * @throws
      *      std::bad_alloc  If there are no memory for buffer
      */
-    size_t write(const char *src, zip_uint64_t offset, size_t count) {
+    size_t write(const char *src, unsigned int offset, size_t count) {
         if (offset + count > chunkSize) {
             count = chunkSize - offset;
         }
@@ -146,7 +148,7 @@ public:
     /**
      * Clear tail of internal buffer with zeroes starting from 'offset'.
      */
-    void clearTail(zip_uint64_t offset) {
+    void clearTail(unsigned int offset) {
         if (m_ptr != NULL && offset < chunkSize) {
             memset(m_ptr + offset, 0, chunkSize - offset);
         }
@@ -157,23 +159,22 @@ public:
 BigBuffer::BigBuffer(): len(0) {
 }
 
-BigBuffer::BigBuffer(struct zip *z, zip_uint64_t nodeId, zip_uint64_t length):
+BigBuffer::BigBuffer(struct zip *z, zip_uint64_t nodeId, size_t length):
         len(length) {
     struct zip_file *zf = zip_fopen_index(z, nodeId, 0);
     if (zf == NULL) {
         syslog(LOG_WARNING, "%s", zip_strerror(z));
         throw std::runtime_error(zip_strerror(z));
     }
-    unsigned int ccount = chunksCount(length);
+    size_t ccount = chunksCount(length);
     chunks.resize(ccount, ChunkWrapper());
-    unsigned int chunk = 0;
-    int nr;
+    size_t chunk = 0;
     while (length > 0) {
-        zip_uint64_t readSize = chunkSize;
+        size_t readSize = chunkSize;
         if (readSize > length) {
             readSize = length;
         }
-        nr = zip_fread(zf, chunks[chunk].ptr(true), readSize);
+        zip_int64_t nr = zip_fread(zf, chunks[chunk].ptr(true), readSize);
         if (nr < 0) {
             std::string err = zip_file_strerror(zf);
             syslog(LOG_WARNING, "%s", err.c_str());
@@ -181,7 +182,7 @@ BigBuffer::BigBuffer(struct zip *z, zip_uint64_t nodeId, zip_uint64_t length):
             throw std::runtime_error(err);
         }
         ++chunk;
-        length -= nr;
+        length -= static_cast<size_t>(nr);
         if ((nr == 0 || chunk == ccount) && length != 0) {
             // Allocated memory are exhausted, but there are unread bytes (or
             // file is longer that given length). Possibly CRC error.
@@ -200,16 +201,18 @@ BigBuffer::BigBuffer(struct zip *z, zip_uint64_t nodeId, zip_uint64_t length):
 BigBuffer::~BigBuffer() {
 }
 
-int BigBuffer::read(char *buf, size_t size, zip_uint64_t offset) const {
+int BigBuffer::read(char *buf, size_t size, size_t offset) const {
     if (offset > len) {
         return 0;
     }
-    int chunk = chunkNumber(offset);
-    int pos = chunkOffset(offset);
-    if (size > unsigned(len - offset)) {
+    size_t chunk = chunkNumber(offset);
+    unsigned int pos = chunkOffset(offset);
+    if (size > len - offset) {
         size = len - offset;
     }
-    int nread = size;
+    if (size > INT_MAX)
+        size = INT_MAX;
+    int nread = static_cast<int>(size);
     while (size > 0) {
         size_t r = chunks[chunk].read(buf, pos, size);
 
@@ -221,13 +224,15 @@ int BigBuffer::read(char *buf, size_t size, zip_uint64_t offset) const {
     return nread;
 }
 
-int BigBuffer::write(const char *buf, size_t size, zip_uint64_t offset) {
-    int chunk = chunkNumber(offset);
-    int pos = chunkOffset(offset);
-    int nwritten = size;
+int BigBuffer::write(const char *buf, size_t size, size_t offset) {
+    size_t chunk = chunkNumber(offset);
+    unsigned int pos = chunkOffset(offset);
+    if (size > INT_MAX)
+        size = INT_MAX;
+    int nwritten = static_cast<int>(size);
 
     if (offset > len) {
-        if (len > 0) {
+        if (chunkNumber(len) < chunksCount(len)) {
             chunks[chunkNumber(len)].clearTail(chunkOffset(len));
         }
         len = size + offset;
@@ -246,10 +251,10 @@ int BigBuffer::write(const char *buf, size_t size, zip_uint64_t offset) {
     return nwritten;
 }
 
-void BigBuffer::truncate(zip_uint64_t offset) {
+void BigBuffer::truncate(size_t offset) {
     chunks.resize(chunksCount(offset));
 
-    if (offset > len && len > 0) {
+    if (offset > len && chunkNumber(len) < chunksCount(len)) {
         // Fill end of last non-empty chunk with zeroes
         chunks[chunkNumber(len)].clearTail(chunkOffset(len));
     }
@@ -266,8 +271,11 @@ zip_int64_t BigBuffer::zipUserFunctionCallback(void *state, void *data,
             return 0;
         }
         case ZIP_SOURCE_READ: {
-            int r = b->buf->read((char*)data, len, b->pos);
-            b->pos += r;
+            size_t rlen = std::numeric_limits<size_t>::max();
+            if (len < rlen)
+                rlen = static_cast<size_t>(len);
+            int r = b->buf->read((char*)data, rlen, b->pos);
+            b->pos += static_cast<unsigned int>(r);
             return r;
         }
         case ZIP_SOURCE_STAT: {
@@ -288,18 +296,12 @@ zip_int64_t BigBuffer::zipUserFunctionCallback(void *state, void *data,
             // This code should not be called in normal case because none of
             // implemented functions raises error flag.
             int *errs = static_cast<int *>(data);
-#if LIBZIP_VERSION_MAJOR >= 1
             errs[0] = ZIP_ER_OPNOTSUPP;
-#else
-            errs[0] = ZIP_ER_INVAL;
-#endif
             errs[1] = EINVAL;
             return 2 * sizeof(int);
         }
-#if LIBZIP_VERSION_MAJOR >= 1
         case ZIP_SOURCE_SUPPORTS:
             return ZIP_SOURCE_SUPPORTS_READABLE;
-#endif
         default:
             // indicate unsupported operation
             return -1;
@@ -316,15 +318,23 @@ int BigBuffer::saveToZip(time_t mtime, struct zip *z, const char *fname,
         delete cbs;
         return -ENOMEM;
     }
-    zip_int64_t nid;
-    if ((newFile && (nid = zip_file_add(z, fname, s, ZIP_FL_ENC_UTF_8)) < 0)
-            || (!newFile && zip_file_replace(z, index, s, ZIP_FL_ENC_UTF_8) < 0)) {
-        delete cbs;
-        zip_source_free(s);
-        return -ENOMEM;
-    }
     if (newFile) {
-        index = nid;
+        zip_int64_t nid = zip_file_add(z, fname, s, ZIP_FL_ENC_GUESS);
+        if (nid < 0) {
+            delete cbs;
+            zip_source_free(s);
+            return -ENOMEM;
+        } else {
+            // indices are actually in range [0..2^63-1]
+            index = nid;
+        }
+    } else {
+        assert(index >= 0);
+        if (zip_file_replace(z, static_cast<zip_uint64_t>(index), s, ZIP_FL_ENC_GUESS) < 0) {
+            delete cbs;
+            zip_source_free(s);
+            return -ENOMEM;
+        }
     }
     return 0;
 }

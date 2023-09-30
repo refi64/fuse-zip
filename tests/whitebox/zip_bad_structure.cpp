@@ -1,3 +1,22 @@
+////////////////////////////////////////////////////////////////////////////
+//  Copyright (C) 2013-2021 by Alexander Galanin                          //
+//  al@galanin.nnov.ru                                                    //
+//  http://galanin.nnov.ru/~al                                            //
+//                                                                        //
+//  This program is free software: you can redistribute it and/or modify  //
+//  it under the terms of the GNU General Public License as published by  //
+//  the Free Software Foundation, either version 3 of the License, or     //
+//  (at your option) any later version.                                   //
+//                                                                        //
+//  This program is distributed in the hope that it will be useful,       //
+//  but WITHOUT ANY WARRANTY; without even the implied warranty of        //
+//  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the         //
+//  GNU General Public License for more details.                          //
+//                                                                        //
+//  You should have received a copy of the GNU General Public License     //
+//  along with this program.  If not, see <https://www.gnu.org/licenses/>.//
+////////////////////////////////////////////////////////////////////////////
+
 #include "../config.h"
 
 #include <fuse.h>
@@ -127,12 +146,30 @@ const char *zip_file_strerror(struct zip_file *) {
     return NULL;
 }
 
+const char *zip_get_archive_comment(zip_t *, int *, zip_flags_t) {
+    return NULL;
+}
+
+int zip_set_archive_comment(zip_t *, const char *, zip_uint16_t) {
+    assert(false);
+    return 0;
+}
+
+const char *zip_file_get_comment(zip_t *, zip_uint64_t, zip_uint32_t *, zip_flags_t) {
+    return NULL;
+}
+
+int zip_file_set_comment(zip_t *, zip_uint64_t, const char *, zip_uint16_t, zip_flags_t) {
+    assert(false);
+    return 0;
+}
+
 // test functions
 void duplicateFileNames() {
     struct zip z;
     z.filename = "same_file.name";
     z.count = 2;
-    FuseZipData zd("test.zip", &z, "/tmp");
+    FuseZipData zd("test.zip", &z, "/tmp", false);
     bool thrown = false;
     try {
         zd.build_tree(false);
@@ -148,7 +185,7 @@ void relativePathsReadWrite() {
     struct zip z;
     z.filename = "../file.name";
     z.count = 1;
-    FuseZipData zd("test.zip", &z, "/tmp");
+    FuseZipData zd("test.zip", &z, "/tmp", false);
     bool thrown = false;
     try {
         zd.build_tree(false);
@@ -164,7 +201,7 @@ void absolutePathsReadWrite() {
     struct zip z;
     z.filename = "/file.name";
     z.count = 1;
-    FuseZipData zd("test.zip", &z, "/tmp");
+    FuseZipData zd("test.zip", &z, "/tmp", false);
     bool thrown = false;
     try {
         zd.build_tree(false);
@@ -180,7 +217,7 @@ void relativePathsReadOnly() {
     struct zip z;
     z.filename = "../file.name";
     z.count = 1;
-    FuseZipData zd("test.zip", &z, "/tmp");
+    FuseZipData zd("test.zip", &z, "/tmp", false);
     zd.build_tree(true);
 }
 
@@ -188,7 +225,7 @@ void absolutePathsReadOnly() {
     struct zip z;
     z.filename = "/file.name";
     z.count = 1;
-    FuseZipData zd("test.zip", &z, "/tmp");
+    FuseZipData zd("test.zip", &z, "/tmp", false);
     zd.build_tree(true);
 }
 

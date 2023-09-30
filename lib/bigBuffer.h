@@ -1,22 +1,20 @@
 ////////////////////////////////////////////////////////////////////////////
-//  Copyright (C) 2008-2016 by Alexander Galanin                          //
+//  Copyright (C) 2008-2019 by Alexander Galanin                          //
 //  al@galanin.nnov.ru                                                    //
 //  http://galanin.nnov.ru/~al                                            //
 //                                                                        //
-//  This program is free software; you can redistribute it and/or modify  //
-//  it under the terms of the GNU Lesser General Public License as        //
-//  published by the Free Software Foundation; either version 3 of the    //
-//  License, or (at your option) any later version.                       //
+//  This program is free software: you can redistribute it and/or modify  //
+//  it under the terms of the GNU General Public License as published by  //
+//  the Free Software Foundation, either version 3 of the License, or     //
+//  (at your option) any later version.                                   //
 //                                                                        //
 //  This program is distributed in the hope that it will be useful,       //
 //  but WITHOUT ANY WARRANTY; without even the implied warranty of        //
 //  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the         //
 //  GNU General Public License for more details.                          //
 //                                                                        //
-//  You should have received a copy of the GNU Lesser General Public      //
-//  License along with this program; if not, write to the                 //
-//  Free Software Foundation, Inc.,                                       //
-//  51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA               //
+//  You should have received a copy of the GNU General Public License     //
+//  along with this program.  If not, see <https://www.gnu.org/licenses/>.//
 ////////////////////////////////////////////////////////////////////////////
 
 #ifndef BIG_BUFFER_H
@@ -54,28 +52,28 @@ private:
             zip_uint64_t len, enum zip_source_cmd cmd);
 
     /**
-     * Return number of chunks needed to keep 'offset' bytes.
+     * Return number of chunks needed to keep 'size' bytes.
      */
-    inline static unsigned int chunksCount(zip_uint64_t offset) {
-        return (offset + chunkSize - 1) / chunkSize;
+    inline static size_t chunksCount(size_t size) {
+        return (size + chunkSize - 1) / chunkSize;
     }
 
     /**
      * Return number of chunk where 'offset'-th byte is located.
      */
-    inline static unsigned int chunkNumber(zip_uint64_t offset) {
+    inline static size_t chunkNumber(size_t offset) {
         return offset / chunkSize;
     }
 
     /**
      * Return offset inside chunk to 'offset'-th byte.
      */
-    inline static int chunkOffset(zip_uint64_t offset) {
+    inline static unsigned int chunkOffset(size_t offset) {
         return offset % chunkSize;
     }
 
 public:
-    zip_uint64_t len;
+    size_t len;
 
     /**
      * Create new file buffer without mapping to file in a zip archive
@@ -92,7 +90,7 @@ public:
      *      std::exception  On file read error
      *      std::bad_alloc  On memory insufficiency
      */
-    BigBuffer(struct zip *z, zip_uint64_t nodeId, zip_uint64_t length);
+    BigBuffer(struct zip *z, zip_uint64_t nodeId, size_t length);
 
     ~BigBuffer();
 
@@ -107,7 +105,7 @@ public:
      * @param offset    offset to start reading from
      * @return number of bytes read
      */
-    int read(char *buf, size_t size, zip_uint64_t offset) const;
+    int read(char *buf, size_t size, size_t offset) const;
 
     /**
      * Dispatch write request to chunks of a file and grow 'chunks' vector if
@@ -121,7 +119,7 @@ public:
      * @throws
      *      std::bad_alloc  If there are no memory for buffer
      */
-    int write(const char *buf, size_t size, zip_uint64_t offset);
+    int write(const char *buf, size_t size, size_t offset);
 
     /**
      * Create (or replace) file element in zip file. Class instance should
@@ -149,7 +147,7 @@ public:
      * @throws
      *      std::bad_alloc  If insufficient memory available
      */
-    void truncate(zip_uint64_t offset);
+    void truncate(size_t offset);
 };
 
 #endif

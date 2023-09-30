@@ -1,8 +1,26 @@
 #!/bin/sh
+############################################################################
+##  Copyright (C) 2010-2021 by Alexander Galanin                          ##
+##  al@galanin.nnov.ru                                                    ##
+##  http://galanin.nnov.ru/~al                                            ##
+##                                                                        ##
+##  This program is free software: you can redistribute it and/or modify  ##
+##  it under the terms of the GNU General Public License as published by  ##
+##  the Free Software Foundation, either version 3 of the License, or     ##
+##  (at your option) any later version.                                   ##
+##                                                                        ##
+##  This program is distributed in the hope that it will be useful,       ##
+##  but WITHOUT ANY WARRANTY; without even the implied warranty of        ##
+##  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the         ##
+##  GNU General Public License for more details.                          ##
+##                                                                        ##
+##  You should have received a copy of the GNU General Public License     ##
+##  along with this program.  If not, see <https://www.gnu.org/licenses/>.##
+############################################################################
 # \
 exec tclsh "$0" "$@"
 
-package require Tcl 8.5
+package require Tcl 8.6
 package require BLT
 package require Tclx
 package require cmdline
@@ -21,6 +39,7 @@ namespace eval ::fusezip::test {
 
     variable valgrind false
     variable listTests false
+    variable enabledConditions {}
 
     variable status {}
     variable error {}
@@ -40,14 +59,16 @@ namespace eval ::fusezip::test {
 
     proc parseArgs {} {
         variable matchList
+        variable enabledConditions
         upvar #0 argv argv
 
         set options {
             {list       "List tests and exit"}
             {valgrind   "Run tests under valgrind and check memory errors"}
+            {sudo       "Enable tests that require sudo"}
             {-help      "Print this message"}
         }
-        
+
         if {[ catch {
             array set p [ ::cmdline::getKnownOptions argv $options ]
         } msg ]} {
@@ -60,6 +81,12 @@ namespace eval ::fusezip::test {
         }
         variable listTests $p(list)
         variable valgrind $p(valgrind)
+        if {$p(sudo)} {
+            lappend enabledConditions sudo
+        }
+        if {[llength [auto_execok pkzipc]] != 0} {
+            lappend enabledConditions pkzip
+        }
 
         if {[ llength $argv ] != 0} {
             set matchList $argv
@@ -103,8 +130,9 @@ namespace eval ::fusezip::test {
     #   id          Test ID
     #   description Test Description
     #   script      Test body
+    #   conditions  (optional) conditions to execute test
 
-    proc fstest {id description script} {
+    proc fstest {id description script {conditions {}}} {
         variable mounted false
         variable error
         variable numPassed
@@ -114,6 +142,7 @@ namespace eval ::fusezip::test {
         variable mountdir
         variable matchList
         variable failed
+        variable enabledConditions
         upvar fname fname
         set fname {}
 
@@ -124,6 +153,11 @@ namespace eval ::fusezip::test {
                 break
             }
         }
+        foreach cond $conditions {
+            if {$cond ni $enabledConditions} {
+                set do false
+            }
+        }
         if {!$do} {
             incr numSkipped
             return
@@ -132,6 +166,7 @@ namespace eval ::fusezip::test {
         file mkdir $tmpdir
         set mountdir "[ file join $tmpdir mountPoint ]-$id"
         file mkdir $mountdir
+        set pwd [pwd]
         set code [ catch {
             if {[ catch {
                 uplevel $script
@@ -174,7 +209,14 @@ namespace eval ::fusezip::test {
                 incr numSkipped
             }
         }
-        catch {file delete -force $tmpdir}
+        cd $pwd
+        if {"sudo" in $conditions} {
+            exec sudo chmod -R u+w $tmpdir
+            exec sudo rm -rf $tmpdir
+        } else {
+            exec chmod -R u+w $tmpdir
+            exec rm -rf $tmpdir
+        }
     }
 
     # mount --
@@ -193,11 +235,16 @@ namespace eval ::fusezip::test {
         upvar fname fname
         variable binary
         variable mountdir
+        variable tmpdir
         variable stopped
         variable output
         variable error
         variable mounted
         variable initializationState
+
+        if {$fname eq ""} {
+            set fname "$tmpdir/test.zip"
+        }
 
         set ns [ namespace current ]
         set ${ns}::status {STARTED}
@@ -241,14 +288,14 @@ namespace eval ::fusezip::test {
         variable error
 
         set data [string trim $data]
-        if {[ regexp {^unique: 1,.*[Ss]uccess.*, outsize: \d+$} $data ]} {
+        if {[ regexp {^INIT\M} $data ]} {
             set initializationState success
         }
         lappend error $data
     }
 
     # umount --
-    # 
+    #
     #   Unmount filesystem.
     #   Firstly try to umount FS in a standard way via fusermount -uz.
     #   If file system is not unmounted in a specified timeout, kill filesystem
@@ -304,13 +351,13 @@ namespace eval ::fusezip::test {
     proc forceumount {} {
         variable mountdir
         variable status
-        
+
         catch {exec fusermount -u $mountdir}
         set [ namespace current ]::status FORCE-KILLED
         catch {exec fusermount -uz $mountdir}
     }
 
-    # create -- 
+    # create --
     #
     #   Create specified list of files and directories in specified directory
     #   (relative to tmpdir).
@@ -328,7 +375,7 @@ namespace eval ::fusezip::test {
 
         file delete -force $tmpdir/$dir
         file mkdir $tmpdir/$dir
-        
+
         set pos 0
         while {$pos < [ llength $files ]} {
             set name [ lindex $files $pos ]
@@ -342,7 +389,7 @@ namespace eval ::fusezip::test {
         }
     }
 
-    # create -- 
+    # create --
     #
     #   Create archive for tests containing specified list of files and
     #   directories and set it name to variable fname in caller context.
@@ -354,7 +401,10 @@ namespace eval ::fusezip::test {
         variable tmpdir
         upvar fname fname
 
-        set fname $tmpdir/test.zip
+        set container [file join $tmpdir container]
+        file delete -force $container
+        file mkdir $container
+        set fname $container/test.zip
 
         createContent archiveSource $files
         set pwd [ pwd ]
@@ -366,6 +416,37 @@ namespace eval ::fusezip::test {
             return -options $opts
         }
         cd $pwd
+    }
+
+    # use --
+    #
+    #   Use specified file as input archive for test. Copy it into a temporary dir.
+    #
+    # Arguments:
+    #   path path to archive
+    proc use {path} {
+        variable tmpdir
+        upvar fname fname
+
+        set container [file join $tmpdir container]
+        file delete -force $container
+        file mkdir $container
+        set fname $container/test.zip
+        file copy $path $fname
+    }
+
+    # unzip --
+    #
+    #   Extract file to temporary dir
+    proc unzip {} {
+        upvar fname fname
+        variable tmpdir
+
+        exec unzip -t $fname
+
+        file delete -force $tmpdir/extract
+        file mkdir $tmpdir/extract
+        exec unzip -nd $tmpdir/extract $fname
     }
 
     # check --
@@ -437,6 +518,7 @@ namespace eval ::fusezip::test {
         variable failed
 
         forceumount
+        catch {exec chmod -R a+w $tmpdir}
         file delete -force $tmpdir
 
         if {!$listTests} {
@@ -457,10 +539,172 @@ namespace eval ::fusezip::test {
         }
     }
 
+    # getPreciseTimes --
+    #
+    #   get high-precision time stamps of a file
+    #
+    # Arguments:
+    #   fname   file name
+    #
+    # Return value:
+    #   list of mtime and atime
+    proc getPreciseTimes {fname} {
+        foreach line [split [exec /usr/bin/env LC_ALL=C TZ=UTC stat $fname] \n] {
+            if {[regexp -nocase {^([a-z]+): (.+)$} $line _ key value]} {
+                switch $key {
+                    Access {
+                        set atime $value
+                    }
+                    Modify {
+                        set mtime $value
+                    }
+                }
+            }
+        }
+        return [list $mtime $atime]
+    }
+
+    # getExtendedAttributes --
+    #
+    #   get user.* extended attributes as dict
+    #
+    # Arguments:
+    #   fname   file name
+    proc getExtendedAttributes {fname} {
+        set res {}
+        foreach line [split [exec getfattr -d -e hex $fname 2> /dev/null] \n] {
+            if {[regexp {^(user\.[a-zA-Z0-9_]+)=0x(.*)} $line _ key value]} {
+                set value [encoding convertfrom utf-8 [binary decode hex $value]]
+                dict set res $key $value
+            }
+        }
+        return $res
+    }
+
+    # getZipComments --
+    #
+    #   get archive and file comments uzing unzip
+    #
+    # Arguments:
+    #   fname   file name
+    proc getZipComments {fname} {
+        set res {}
+        set name ""
+        set comment {}
+        set header 0
+        foreach line [split [exec unzip -l $fname] \n] {
+            if {$header == 0} {
+                switch -regexp $line {
+                    {^Archive: } {}
+                    {^\s+Length\s+Date\s+Time\s+Name$} {
+                        set header 1
+                    }
+                    default {
+                        lappend comment $line
+                    }
+                }
+            } elseif {$header == 1} {
+                if {![regexp {^-+\s+-+\s+-+\s+-+$} $line]} {
+                    error "bad delimiter format: `$line'"
+                }
+                set header 2
+            } else {
+                switch -regexp -matchvar match $line {
+                    {^\s*[0-9]+\s+\d\d\d\d-\d\d-\d\d \d\d:\d\d\s+(.*)} {
+                        if {[llength $comment] || $name eq ""} {
+                            dict set res $name [join $comment \n]
+                        }
+                        lassign $match _ name
+                        set comment {}
+                    }
+                    {^-+\s+-+$} {
+                        if {[llength $comment] || $name eq ""} {
+                            dict set res $name [join $comment \n]
+                        }
+                        break
+                    }
+                    default {
+                        lappend comment $line
+                    }
+                }
+            }
+        }
+        return $res
+    }
+
+    proc getZipItemInfo {fname itemname} {
+        set res {
+            unix_perms  unknown
+            dos_perms   unknown
+            comp_size   -1
+            orig_size   -1
+            method      unknown
+        }
+        foreach line [split [exec zipinfo -v $fname $itemname] \n] {
+            switch -regex -matchvar match $line {
+                {^ *compression method: *([a-z0-9]+)( \(.*\))?$} {
+                    lassign $match _ method
+                    dict set res method $method
+                }
+                {^ *compressed size: *([0-9]+) bytes$} {
+                    lassign $match _ size
+                    dict set res comp_size $size
+                }
+                {^ *uncompressed size: *([0-9]+) bytes$} {
+                    lassign $match _ size
+                    dict set res orig_size $size
+                }
+                {^ *Unix file attributes \(([0-7]{6,6}) octal\):} {
+                    lassign $match _ attr
+                    dict set res unix_perms $attr
+                }
+                {^ *MS-DOS file attributes \(([0-9a-fA-F]{2,2}) hex\):} {
+                    lassign $match _ attr
+                    dict set res dos_perms $attr
+                }
+            }
+        }
+        return $res
+    }
+
+    proc pkzipExtract {{sudo {}}} {
+        upvar fname fname
+        variable tmpdir
+
+        file delete -force $tmpdir/extract
+        file mkdir $tmpdir/extract
+        set pwd [pwd]
+        if {$sudo eq "sudo"} {
+            set prefix sudo
+        } else {
+            set prefix {}
+        }
+        try {
+            cd $tmpdir/extract
+            exec {*}$prefix pkzipc -extract -filetype=all -permission $fname
+        } on error {err opts} {
+            exec {*}$prefix rm -rf $tmpdir/extract
+            return -options $opts $err
+        } finally {
+            cd $pwd
+        }
+    }
+
+    proc eassert {arg1 oper arg2 {text ""}} {
+        set res [expr "\$arg1 $oper \$arg2"]
+        if {$res} {
+            return
+        }
+        if {$text eq ""} {
+            set text "assertion failed"
+        }
+        error "$text: $arg1 $oper $arg2"
+    }
+
     ############################################################
     # INITIALIZATION
     ############################################################
-    
+
     parseArgs
 
     signal trap {HUP INT TERM} "puts stderr Interrupt; ::[ namespace current ]::finalize"
@@ -522,7 +766,7 @@ namespace eval ::fusezip::test {
     }
 
     fstest bad-archive-crc {Bad archive} {
-        set fname data/bad-archive.zip
+        use data/bad-archive.zip
         mount
         if {![catch {open $mountdir/bash.txt r} err opts]} {
             error "File read error is expected"
@@ -538,6 +782,23 @@ namespace eval ::fusezip::test {
         mount
         umount
         if {[ file exist $fname ]} {
+            error "Archive should not exist!"
+        }
+    }
+
+    fstest nonexistent-readonly {Trying to open nonexistent file in read-only mode (#52)} {
+        set fname $tmpdir/nonexistent.zip
+        if {![catch {mount -r} err opts] ||
+                [dict get $opts -errorcode] ne "NOTMOUNTED"} {
+            error "Mount error is expected"
+        } else {
+            set msg [stripValgrindOutput [join $error \n]]
+            if {![regexp {^fuse-zip: cannot open ZIP archive} $msg]} {
+                error "Invalid error message: $msg"
+            }
+        }
+        umount
+        if {[file exist $fname]} {
             error "Archive should not exist!"
         }
     }
@@ -742,7 +1003,6 @@ namespace eval ::fusezip::test {
         file delete $mountdir/filename.ext
         umount
         if {[ file exist $fname ]} {
-            puts [ exec cat $fname ]
             error "Archive should not exist!"
         }
     }
@@ -968,6 +1228,36 @@ namespace eval ::fusezip::test {
         ]
     }
 
+    # Issue #50: Out of bounds write on sparse file
+    fstest sparse-file-chunk-boundary {Sparse files expand on a chunk boundary} {
+        set count 4096
+
+        create [list \
+            filename.ext [string repeat a $count] \
+        ]
+        mount
+
+        set f [open $mountdir/filename.ext r+]
+        seek $f [expr {$count + 1}] start
+        puts -nonewline $f end
+        close $f
+
+        set content "[ string repeat a $count ]\x00end"
+
+        set f [ open $mountdir/filename.ext r ]
+        set data [ read $f ]
+        close $f
+
+        if {[ string compare $content $data ] != 0} {
+            error "Invalid file content: $data"
+        }
+
+        umount
+        check [ list \
+            filename.ext $content \
+        ]
+    }
+
     fstest sparse-truncate {Truncate sparse file} {
         create {
             filename.ext {}
@@ -984,6 +1274,35 @@ namespace eval ::fusezip::test {
         close $f
 
         set content "[ string repeat "\x00" $count ]"
+
+        set f [ open $mountdir/filename.ext r ]
+        set data [ read $f ]
+        close $f
+
+        if {[ string compare $content $data ] != 0} {
+            error "Invalid file content: $data"
+        }
+
+        umount
+        check [ list \
+            filename.ext $content \
+        ]
+    }
+
+    # Issue #50: Out of bounds write on sparse file
+    fstest sparse-expand-chunk-boundary {Expand sparse file at chunk boundary} {
+        set count 4096
+
+        create [list \
+            filename.ext [string repeat a $count] \
+        ]
+        mount
+
+        set f [ open $mountdir/filename.ext r+ ]
+        ftruncate -fileid $f [expr {$count + 1}]
+        close $f
+
+        set content "[ string repeat a $count ]\x00"
 
         set f [ open $mountdir/filename.ext r ]
         set data [ read $f ]
@@ -1147,7 +1466,7 @@ namespace eval ::fusezip::test {
     }
 
     fstest read-bad-crc {Read file from archive (bad CRC)} {
-        set fname data/bad-crc.zip
+        use data/bad-crc.zip
 
         mount
         set res [ catch {
@@ -1164,7 +1483,7 @@ namespace eval ::fusezip::test {
     }
 
     fstest read-bad-crc-twice {Read file from archive (bad CRC, twice), changeset 80ad59679639} {
-        set fname data/bad-crc.zip
+        use data/bad-crc.zip
 
         mount
         foreach step {1st 2nd} {
@@ -1247,16 +1566,35 @@ namespace eval ::fusezip::test {
     }
 
     fstest iconv-cp866 {Check that archive from 'other' OS correctly mounted} {
-        set fname data/cp866.zip
+        use data/cp866.zip
 
         mount -o modules=iconv,from_code=cp866
 
-        if {[ lsort [ glob -directory $mountdir -tails * ] ] ne
+        if {[ lsort [ glob -directory $mountdir -nocomplain -tails * ] ] ne
                 [ lsort "{\u0422\u0435\u043a\u0441\u0442\u043e\u0432\u044b\u0439 \u0434\u043e\u043a\u0443\u043c\u0435\u043d\u0442.txt} \u0414\u0430\u0442\u0430" ]} {
             error "File names incorrectly decoded: [ glob -directory $mountdir * ]"
         }
 
         umount
+    }
+
+    fstest iconv-create {Archive creation with iconv module} {
+        set natName "\u041B\u0435\u043D\u0438\u043D/\u041F\u0430\u0440\u0442\u0438\u044F/\u041A\u043E\u043C\u0441\u043E\u043C\u043E\u043B"
+        mount -o modules=iconv,from_code=cp866
+        makeFile "111" $natName $mountdir
+        umount
+
+        mount -o modules=iconv,from_code=cp866
+        try {
+            set f [open "$mountdir/$natName" r]
+            try {
+                assert {[read $f] eq "111"} "bad file content"
+            } finally {
+                close $f
+            }
+        } finally {
+            umount
+        }
     }
 
     fstest rename-file {Rename file} {
@@ -1436,6 +1774,50 @@ namespace eval ::fusezip::test {
         exec diff $fname $fname-copy
     }
 
+    fstest implicit-read-only-file {Check that read-only file is mounted read-only} {
+        create {
+            foo.bar foobar
+        }
+        exec chmod a-w $fname
+        mount
+        try {
+            set f [open $mountdir/newfile w]
+        } trap {POSIX EROFS} {} {
+            # as expected
+        } on error {err opts} {
+            return -options $opts "read-only filesystem error is expected!"
+        } finally {
+            catch {close $f}
+        }
+        umount
+
+        check {
+            foo.bar foobar
+        }
+    }
+
+    fstest implicit-read-only-dir {Check that file in read-only directory is mounted read-only} {
+        create {
+            foo.bar foobar
+        }
+        exec chmod a-w [file dirname $fname]
+        mount
+        try {
+            set f [open $mountdir/newfile w]
+        } trap {POSIX EROFS} {} {
+            # as expected
+        } on error {err opts} {
+            return -options $opts "read-only filesystem error is expected!"
+        } finally {
+            catch {close $f}
+        }
+        umount
+
+        check {
+            foo.bar foobar
+        }
+    }
+
     fstest dir-stub-read-only {Check that archive is not modified after mount/unmount in case of stub directories is created while loading file tree} {
         file copy data/not-full-path.zip $tmpdir/not-full-path.zip
         set fname $tmpdir/not-full-path.zip
@@ -1530,7 +1912,7 @@ namespace eval ::fusezip::test {
         file mkdir $mountdir/foo
         file delete $mountdir/foo
         umount
-        
+
         check {
             a b
         }
@@ -1545,14 +1927,14 @@ namespace eval ::fusezip::test {
         mount
         file delete $mountdir/foo
         umount
-        
+
         check {
             a b
         }
     }
 
     fstest parent-relative-paths-rw {Check for paths relative to parent directory in archive (read-write)} {
-        set fname data/parent-relative-paths.zip
+        use data/parent-relative-paths.zip
         if {![ catch {mount} err opts ] ||
                 [ dict get $opts -errorcode ] ne "NOTMOUNTED"} {
             error "Mount error is expected"
@@ -1565,7 +1947,7 @@ namespace eval ::fusezip::test {
     }
 
     fstest absolute-path-rw {Check for absolute paths in archive (read-write)} {
-        set fname data/absolute-path.zip
+        use data/absolute-path.zip
         if {![catch {mount} err opts] || [dict get $opts -errorcode] ne "NOTMOUNTED"} {
             error "Mount error is expected"
         } else {
@@ -1577,7 +1959,7 @@ namespace eval ::fusezip::test {
     }
 
     fstest parent-relative-paths-ro {Check for paths relative to parent directory in archive (read-only)} {
-        set fname data/parent-relative-paths.zip
+        use data/parent-relative-paths.zip
         mount -r
         set actual [split [string trim [exec sh -c "cd $mountdir; find . -printf '%p '"]]]
         set expected {. ./UPUP ./UPUP/INSTALL ./UP ./UP/other ./UP/other/LICENSE}
@@ -1593,7 +1975,7 @@ namespace eval ::fusezip::test {
     }
 
     fstest absolute-path-ro {Check for absolute paths in archive (read-only)} {
-        set fname data/absolute-path.zip
+        use data/absolute-path.zip
         mount -r
         set actual [split [string trim [exec sh -c "cd $mountdir; find . -printf '%p '"]]]
         set expected {. ./ROOT ./ROOT/rootname.ext}
@@ -1609,7 +1991,7 @@ namespace eval ::fusezip::test {
     }
 
     fstest mixed-paths-ro {Check mixed paths in archive (absolute, relative and "normal")} {
-        set fname data/mixed-paths.zip
+        use data/mixed-paths.zip
         mount -r
         set actual [split [string trim [exec sh -c "cd $mountdir; find . -printf '%p '"]]]
         set expected {. ./ROOT ./ROOT/root ./ROOT/root/name.ext ./CUR ./CUR/normal.file ./UP ./UP/parent ./UP/parent/relative}
@@ -1656,7 +2038,7 @@ namespace eval ::fusezip::test {
     }
 
     fstest time-from-extra-field {Check that time correctly loaded from extra field} {
-        set fname data/extrafld.zip
+        use data/extrafld.zip
         mount -r
 
         set mtime [file mtime $mountdir/README]
@@ -1668,7 +2050,25 @@ namespace eval ::fusezip::test {
         umount
     }
 
+    fstest time-from-ntfs-extra-field {Check that time is correctly loaded from NTFS extra field} {
+        use data/ntfs-extrafld.zip
+        mount -r
+
+        lassign [getPreciseTimes $mountdir/test.txt] mtime atime
+
+        set exp_mtime "2019-06-13 14:22:01.722114700 +0000"
+        set exp_atime "2019-06-13 14:22:03.770100400 +0000"
+
+        assert {$mtime == $exp_mtime} "mtime must be $exp_mtime but $mtime read"
+        assert {$atime == $exp_atime} "atime must be $exp_atime but $atime read"
+
+        umount
+    }
+
     fstest time-preserve {Check that time is preserved across remounts} {
+        set new_mtime 1511111111
+        set new_atime 1522222222
+
         create {
             foo.bar foobar
         }
@@ -1676,8 +2076,8 @@ namespace eval ::fusezip::test {
         set f [open $mountdir/foo.bar w]
         puts $f "meow"
         close $f
-        file mtime $mountdir/foo.bar 123
-        file atime $mountdir/foo.bar 456
+        file mtime $mountdir/foo.bar $new_mtime
+        file atime $mountdir/foo.bar $new_atime
         umount
 
         mount
@@ -1685,8 +2085,74 @@ namespace eval ::fusezip::test {
         set atime [file atime $mountdir/foo.bar]
         umount
 
-        assert {$mtime == 123} "mtime changed to $mtime"
-        assert {$atime == 456} "mtime changed to $atime"
+        assert {$mtime == $new_mtime} "mtime changed to $mtime ([clock format $mtime])"
+        assert {$atime == $new_atime} "atime changed to $atime ([clock format $atime])"
+    }
+
+    fstest time-preserve-high-precision {Check that high-precision time is preserved across remounts} {
+        set new_atime "2018-07-16 01:23:45.123456700 +0000"
+        set new_mtime "2018-07-16 12:34:56.789012300 +0000"
+
+        create {
+            blah blah
+        }
+        mount
+        set f [open $mountdir/foo.bar w]
+        puts $f "meow"
+        close $f
+        exec touch -m -d $new_mtime $mountdir/foo.bar
+        exec touch -a -d $new_atime $mountdir/foo.bar
+        umount
+
+        mount
+        lassign [getPreciseTimes $mountdir/foo.bar] mtime atime
+        umount
+
+        assert {$mtime == $new_mtime} "mtime changed to $mtime"
+        assert {$atime == $new_atime} "atime changed to $atime"
+    }
+
+    fstest time-preserve-high-precision-no-force {Check that high-precision time is only updated, not created} {
+        set new_time_precise "2018-07-28 01:23:45.123456700 +0000"
+        set new_time         "2018-07-28 01:23:45.000000000 +0000"
+
+        use data/with-and-without-precise-time.zip
+
+        mount
+        exec touch -d $new_time_precise $mountdir/with-precise
+        exec touch -d $new_time_precise $mountdir/without-precise
+        umount
+
+        mount -r
+        lassign [getPreciseTimes $mountdir/with-precise] mtime1
+        lassign [getPreciseTimes $mountdir/without-precise] mtime2
+        umount
+
+        assert {$mtime1 == $new_time_precise} "precise time not updated (time is $mtime1)"
+        assert {$mtime2 == $new_time} "precise time unexpectedly created (time is $mtime2)"
+    }
+
+    fstest time-preserve-high-precision-force {Check that high-precision time is created if force flag is given} {
+        set new_time_precise "2018-07-28 01:23:45.123456700 +0000"
+        set new_time         "2018-07-28 01:23:45.000000000 +0000"
+        set unmodified_time  "2019-07-28 15:24:25.000000000 +0000"
+
+        use data/with-and-without-precise-time.zip
+
+        mount -o force_precise_time
+        exec touch -d $new_time_precise $mountdir/with-precise
+        exec touch -d $new_time_precise $mountdir/without-precise
+        umount
+
+        mount -r
+        lassign [getPreciseTimes $mountdir/with-precise] mtime1
+        lassign [getPreciseTimes $mountdir/without-precise] mtime2
+        lassign [getPreciseTimes $mountdir/unmodified] mtime3
+        umount
+
+        assert {$mtime1 == $new_time_precise} "precise time not updated (time is $mtime1)"
+        assert {$mtime2 == $new_time_precise} "precise time not created (time is $mtime2)"
+        assert {$mtime3 == $unmodified_time} "precise time id not created (time is $mtime3)"
     }
 
     fstest atime-mtime-modification {Check atime and mtime modification cases} {
@@ -1724,6 +2190,19 @@ namespace eval ::fusezip::test {
         assert {$stat1(ctime) < $stat2(ctime)} "ctime not changed"
     }
 
+    fstest ctime-update-on-rename {Check that ctime is updated on rename} {
+        use data/foobar.zip
+        mount
+        file stat $mountdir/foo stat1
+        file rename $mountdir/foo $mountdir/foo2
+        file stat $mountdir/foo2 stat2
+        umount
+
+        assert {$stat1(mtime) == $stat2(mtime)} "mtime changed"
+        assert {$stat1(atime) == $stat2(atime)} "atime changed"
+        assert {$stat1(ctime) <  $stat2(ctime)} "ctime not updated"
+    }
+
     fstest dir-accessible-after-creation {Check that directory is accessible after creation} {
         create {
             file content
@@ -1752,7 +2231,7 @@ namespace eval ::fusezip::test {
     }
 
     fstest dos-permissions {Check DOS file permissions handling} {
-        set fname data/dos-perm.zip
+        use data/dos-perm.zip
         mount -r
         assert {[file isdirectory $mountdir/dir]} "not a directory"
         foreach name {hidden readonly normal} {
@@ -1767,13 +2246,46 @@ namespace eval ::fusezip::test {
     }
 
     fstest unix-permissions {Check UNIX file permissions handling} {
-        set fname data/unix-perm.zip
+        use data/unix-perm.zip
         mount -r
         foreach name {640 642 666 6775 777} {
             assert {[file isfile $mountdir/$name]} "file 'dir/$name.txt' is not regular"
             assert {[file attributes $mountdir/$name -permissions] == "0$name"} "file '$name' is has wrong permissions"
         }
         umount
+    }
+
+    fstest check-zip-permissions {Check permissions in output ZIP archive} {
+        mount
+        makeFile ABC regular  $mountdir
+        makeFile DEF readonly $mountdir
+        file attributes $mountdir/readonly -permissions ug=r,o=
+        makeFile GHI .hidden  $mountdir
+        makeFile JKL altered  $mountdir
+        file attributes $mountdir/altered -permissions 01234
+        file mkdir $mountdir/dir
+        umount
+
+        set regular  [getZipItemInfo $fname regular]
+        set readonly [getZipItemInfo $fname readonly]
+        set hidden   [getZipItemInfo $fname .hidden]
+        set altered  [getZipItemInfo $fname altered]
+        set dir      [getZipItemInfo $fname dir/]
+
+        eassert [dict get $regular  unix_perms] eq 100664 "regular file UNIX permissions"
+        eassert [dict get $regular  dos_perms]  eq 00     "regular file DOS permissions"
+
+        eassert [dict get $readonly unix_perms] eq 100440 "read-only file UNIX permissions"
+        eassert [dict get $readonly dos_perms]  eq 01     "read-only file DOS permissions"
+
+        eassert [dict get $hidden   unix_perms] eq 100664 "hidden file UNIX permissions"
+        eassert [dict get $hidden   dos_perms]  eq 02     "hidden file DOS permissions"
+
+        eassert [dict get $altered  unix_perms] eq 101234 "altered file UNIX permissions"
+        eassert [dict get $altered  dos_perms]  eq 00     "altered file DOS permissions"
+
+        eassert [dict get $dir      unix_perms] eq 040775 "directory UNIX permissions"
+        eassert [dict get $dir      dos_perms]  eq 10     "directory DOS permissions"
     }
 
     fstest chmod-file {Check chmod() for file} {
@@ -1790,6 +2302,10 @@ namespace eval ::fusezip::test {
         file attributes $n -permissions 0444
         assert {[file attributes $n -permissions] == 0444} "should be a=r"
         umount
+
+        set info [getZipItemInfo $fname cat]
+        eassert [dict get $info unix_perms] eq 100444 "bad UNIX permissions"
+        eassert [dict get $info dos_perms]  eq 01     "bad DOS permissions"
 
         mount
         assert {[file attributes $n -permissions] == 0444} "permissions not persist"
@@ -1808,6 +2324,10 @@ namespace eval ::fusezip::test {
         assert {[file attributes $n -permissions] == 0444} "should be a=r"
         umount
 
+        set info [getZipItemInfo $fname cat]
+        eassert [dict get $info unix_perms] eq 100444 "bad UNIX permissions"
+        eassert [dict get $info dos_perms]  eq 01     "bad DOS permissions"
+
         mount
         assert {[file attributes $n -permissions] == 0444} "permissions not persist"
         umount
@@ -1825,15 +2345,36 @@ namespace eval ::fusezip::test {
         assert {([file attributes $n -permissions] & 0777) == 0555} "should be a=rx"
         umount
 
+        set info [getZipItemInfo $fname cat/]
+        eassert [dict get $info unix_perms] eq 040555 "bad UNIX permissions"
+        eassert [dict get $info dos_perms]  eq 11     "bad DOS permissions"
+
         mount
         assert {([file attributes $n -permissions] & 0777) == 0555} "permissions not persist"
         umount
     }
 
-    fstest readlink {Check readlink} {
-        set fname data/symlink.zip
+    fstest symlink-infozip {Check symlink in Info-ZIP format} {
+        use data/symlink.zip
         mount -r
+        assert {[file type $mountdir/symlink] eq "link"}
         assert {[file readlink $mountdir/symlink] eq "../tmp/date"} "invalid link content"
+        umount
+    }
+
+    fstest symlink-pkware {Check symlink in PKWARE format} {
+        use data/pkware-specials.zip
+        mount -r
+        assert {[file type $mountdir/symlink2] eq "link"}
+        assert {[file readlink $mountdir/symlink2] eq "regular"} "invalid link content"
+        umount
+    }
+
+    fstest symlink-pkware-hardlinked {Check symlink in PKWARE format (hardlinked symlink)} {
+        use data/pkware-specials.zip
+        mount -r
+        assert {[file type $mountdir/symlink] eq "link"}
+        assert {[file readlink $mountdir/symlink] eq "regular"} "invalid link content"
         umount
     }
 
@@ -1846,13 +2387,29 @@ namespace eval ::fusezip::test {
         assert {[file readlink $mountdir/symlink] eq "/dev/null"} "invalid link content"
         umount
 
+        set info [getZipItemInfo $fname symlink]
+        eassert [dict get $info unix_perms] eq 120777 "bad UNIX permissions"
+        eassert [dict get $info dos_perms]  eq 00     "bad DOS permissions"
+
         mount
         assert {[file readlink $mountdir/symlink] eq "/dev/null"} "invalid link content after umount"
         umount
     }
-    
+
+    fstest symlink-pkware-touch {Check PKWARE format symlink metadata update and save} {
+        use data/pkware-symlink.zip
+        mount
+        exec touch -h -a -t 201908091406 $mountdir/symlink
+        umount
+
+        unzip
+
+        assert {[file type $tmpdir/extract/symlink] eq "link"}
+        assert {[file readlink $tmpdir/extract/symlink] eq "regular"} "invalid link content"
+    }
+
     fstest no-owner-info {Check that default owner:group is root:root} {
-        set fname data/no-owner-info.zip
+        use data/no-owner-info.zip
         mount -r
         file stat $mountdir/README stat
         assert {$stat(uid) == 0} "owner is not root"
@@ -1903,7 +2460,7 @@ namespace eval ::fusezip::test {
     }
 
     fstest file-dir-same-name {Check that archive that contain file and intermediate dir with the same name recognised as broken} {
-        set fname data/file-dir-same-name.zip
+        use data/file-dir-same-name.zip
         if {![catch {mount -r} err opts] ||
                 [ dict get $opts -errorcode ] ne "NOTMOUNTED"} {
             error "Mount error is expected"
@@ -1959,8 +2516,791 @@ namespace eval ::fusezip::test {
         umount
     }
 
+    fstest inode {different files must have different inode numbers} {
+        create {
+            foo bar
+            moo woof
+        }
+        mount -o use_ino
+
+        makeFile deer bee $mountdir
+        makeFile elks see $mountdir
+
+        file stat $mountdir/foo stat1
+        file stat $mountdir/moo stat2
+        file stat $mountdir/bee stat3
+        file stat $mountdir/see stat4
+
+        umount
+
+        assert {$stat1(ino) != $stat2(ino)} "existing file inodes must be different"
+        assert {$stat3(ino) != $stat4(ino)} "new file inodes must be different"
+        assert {$stat1(ino) != $stat3(ino)} "all inodes must be different, 1"
+        assert {$stat1(ino) != $stat4(ino)} "all inodes must be different, 2"
+        assert {$stat2(ino) != $stat3(ino)} "all inodes must be different, 3"
+        assert {$stat2(ino) != $stat4(ino)} "all inodes must be different, 4"
+
+        eassert $stat1(nlink) == 1 "must be 1 link for non-hardlinked file"
+        eassert $stat2(nlink) == 1 "must be 1 link for non-hardlinked file"
+    }
+
+    fstest comment-read-ascii {read archive and file ASCII comments} {
+        use data/comment.zip
+        mount -r
+
+        set attr [getExtendedAttributes $mountdir]
+        assert {[dict keys $attr] == "user.comment"}
+        assert {[dict get $attr "user.comment"] == "archive comment"}
+
+        set attr [getExtendedAttributes $mountdir/dir]
+        assert {[dict keys $attr] == "user.comment"}
+        assert {[dict get $attr "user.comment"] == "directory comment"}
+
+        set attr [getExtendedAttributes $mountdir/dir/with_comment.txt]
+        assert {[dict keys $attr] == "user.comment"}
+        assert {[dict get $attr "user.comment"] == "file comment"}
+
+        set attr [getExtendedAttributes $mountdir/dir/empty_comment.txt]
+        assert {[dict keys $attr] == ""}
+
+        set attr [getExtendedAttributes $mountdir/dir/without_comment.txt]
+        assert {[dict keys $attr] == ""}
+
+        umount
+    }
+
+    fstest comment-read-utf8 {read archive and file UTF-8 comments} {
+        use data/comment-utf8.zip
+        mount -r
+
+        set attr [getExtendedAttributes $mountdir]
+        assert {[dict keys $attr] == "user.comment"}
+        assert {[dict get $attr "user.comment"] == "\u043A\u043E\u043C\u043C\u0435\u043D\u0442\u0430\u0440\u0438\u0439 \u043A \u0430\u0440\u0445\u0438\u0432\u0443"}
+
+        set attr [getExtendedAttributes $mountdir/dir]
+        assert {[dict keys $attr] == "user.comment"}
+        assert {[dict get $attr "user.comment"] == "\u043A\u043E\u043C\u043C\u0435\u043D\u0442\u0430\u0440\u0438\u0439 \u043A \u043A\u0430\u0442\u0430\u043B\u043E\u0433\u0443"}
+
+        set attr [getExtendedAttributes $mountdir/dir/with_comment.txt]
+        assert {[dict keys $attr] == "user.comment"}
+        assert {[dict get $attr "user.comment"] == "\u043A\u043E\u043C\u043C\u0435\u043D\u0442\u0430\u0440\u0438\u0439 \u043A \u0444\u0430\u0439\u043B\u0443"}
+
+        set attr [getExtendedAttributes $mountdir/dir/empty_comment.txt]
+        assert {[dict keys $attr] == ""}
+
+        set attr [getExtendedAttributes $mountdir/dir/without_comment.txt]
+        assert {[dict keys $attr] == ""}
+
+        umount
+    }
+
+    fstest comment-create-without-comment {create archive without comments} {
+        create {
+            foo bar
+        }
+
+        mount
+        makeFile meow cat $mountdir
+        umount
+
+        set comm [getZipComments $fname]
+        assert {[dict get $comm ""] eq ""} "unzip: bad archive comment"
+        assert {[llength [dict keys $comm]] == 1} "unzip: bad file comment"
+    }
+
+    fstest comment-create-archive {create archive comment} {
+        create {
+            foo bar
+        }
+        mount
+        set attr [getExtendedAttributes $mountdir]
+        assert {[dict keys $attr] == ""} "bad initial attributes"
+        exec setfattr -n user.comment -v "blah-blah" $mountdir
+        set attr [getExtendedAttributes $mountdir]
+        assert {[dict keys $attr] == "user.comment"} "after set: bad attributes list"
+        assert {[dict get $attr "user.comment"] == "blah-blah"} "after set: bad comment content"
+        umount
+
+        set comm [getZipComments $fname]
+        assert {[dict get $comm ""] eq "blah-blah"} "unzip: bad comment"
+
+        mount
+        set attr [getExtendedAttributes $mountdir]
+        assert {[dict keys $attr] == "user.comment"} "after remount: bad attributes list"
+        assert {[dict get $attr "user.comment"] == "blah-blah"} "after remount: bad comment content"
+        umount
+    }
+
+    fstest comment-create-file {create file/directory comment} {
+        create {
+            dir/foo bar
+        }
+
+        mount
+
+        set attr [getExtendedAttributes $mountdir/dir]
+        assert {[dict keys $attr] == ""}
+        exec setfattr -n user.comment -v "dir comment" $mountdir/dir
+        set attr [getExtendedAttributes $mountdir/dir]
+        assert {[dict keys $attr] == "user.comment"}
+        assert {[dict get $attr "user.comment"] == "dir comment"}
+
+        set attr [getExtendedAttributes $mountdir/dir/foo]
+        assert {[dict keys $attr] == ""}
+        exec setfattr -n user.comment -v "file comment" $mountdir/dir/foo
+        set attr [getExtendedAttributes $mountdir/dir/foo]
+        assert {[dict keys $attr] == "user.comment"}
+        assert {[dict get $attr "user.comment"] == "file comment"}
+        exec setfattr -n user.comment -v "file comment 2" $mountdir/dir/foo
+        set attr [getExtendedAttributes $mountdir/dir/foo]
+        assert {[dict keys $attr] == "user.comment"}
+        assert {[dict get $attr "user.comment"] == "file comment 2"}
+
+        makeFile "meow" new $mountdir
+        set attr [getExtendedAttributes $mountdir/new]
+        assert {[dict keys $attr] == ""}
+        exec setfattr -n user.comment -v "new comment" $mountdir/new
+        set attr [getExtendedAttributes $mountdir/new]
+        assert {[dict keys $attr] == "user.comment"}
+        assert {[dict get $attr "user.comment"] == "new comment"}
+
+        umount
+
+        set comm [getZipComments $fname]
+        assert {[dict get $comm ""] eq ""} "unzip: bad archive comment"
+        assert {[dict get $comm "dir/"] eq "dir comment"} "unzip: bad dir comment"
+        assert {[dict get $comm "dir/foo"] eq "file comment 2"} "unzip: bad dir/foo comment"
+
+        mount
+
+        set attr [getExtendedAttributes $mountdir/dir]
+        assert {[dict keys $attr] == "user.comment"}
+        assert {[dict get $attr "user.comment"] == "dir comment"}
+
+        set attr [getExtendedAttributes $mountdir/dir/foo]
+        assert {[dict keys $attr] == "user.comment"}
+        assert {[dict get $attr "user.comment"] == "file comment 2"}
+
+        set attr [getExtendedAttributes $mountdir/new]
+        assert {[dict keys $attr] == "user.comment"}
+        assert {[dict get $attr "user.comment"] == "new comment"}
+
+        umount
+    }
+
+    fstest comment-create-archive-utf8 {create archive comment (UTF-8)} {
+        create {
+            foo bar
+        }
+        set comment "\u043A\u043E\u043B\u0431\u0430\u0441\u0430"
+
+        mount
+        set attr [getExtendedAttributes $mountdir]
+        assert {[dict keys $attr] == ""} "bad initial attributes"
+        exec setfattr -n user.comment -v $comment $mountdir
+        set attr [getExtendedAttributes $mountdir]
+        assert {[dict keys $attr] == "user.comment"} "after set: bad attributes list"
+        assert {[dict get $attr "user.comment"] == $comment} "after set: bad comment content"
+        umount
+
+        set comm [getZipComments $fname]
+        assert {[dict get $comm ""] eq $comment} "unzip: bad comment"
+
+        mount
+        set attr [getExtendedAttributes $mountdir]
+        assert {[dict keys $attr] == "user.comment"} "after remount: bad attributes list"
+        assert {[dict get $attr "user.comment"] == $comment} "after remount: bad comment content"
+        umount
+    }
+
+    fstest comment-create-file-utf8 {create file comment (UTF-8)} {
+        create {
+            foo bar
+        }
+        set comment "\u043A\u043E\u043B\u0431\u0430\u0441\u0430"
+
+        mount
+        set attr [getExtendedAttributes $mountdir/foo]
+        assert {[dict keys $attr] == ""} "bad initial attributes"
+        exec setfattr -n user.comment -v $comment $mountdir/foo
+        set attr [getExtendedAttributes $mountdir/foo]
+        assert {[dict keys $attr] == "user.comment"} "after set: bad attributes list"
+        assert {[dict get $attr "user.comment"] == $comment} "after set: bad comment content"
+        umount
+
+        set comm [getZipComments $fname]
+        assert {[dict get $comm ""] eq ""} "unzip: bad archive comment"
+        assert {[dict get $comm "foo"] eq $comment} "unzip: bad file comment"
+
+        mount
+        set attr [getExtendedAttributes $mountdir/foo]
+        assert {[dict keys $attr] == "user.comment"} "after remount: bad attributes list"
+        assert {[dict get $attr "user.comment"] == $comment} "after remount: bad comment content"
+        umount
+    }
+
+    fstest comment-create-max-length {maximum-length comment} {
+        set comment [string repeat A 65535]
+        set dump "# file: $mountdir/foo\nuser.comment=\"$comment\""
+
+        create {
+            foo bar
+        }
+        mount
+        exec setfattr --restore - << $dump
+        umount
+
+        set comm [getZipComments $fname]
+        assert {[dict get $comm ""] eq ""} "unzip: bad archive comment"
+        assert {[dict get $comm "foo"] eq $comment} "unzip: bad file comment"
+
+        mount
+        set attr [getExtendedAttributes $mountdir/foo]
+        assert {[dict keys $attr] == "user.comment"}
+        assert {[dict get $attr "user.comment"] == $comment}
+        umount
+    }
+
+    fstest comment-create-too-long {try to create too long comment} {
+        set dump "# file: $mountdir/foo\nuser.comment=\"[string repeat A 65536]\""
+
+        create {
+            foo bar
+        }
+        mount
+        if {[catch {exec /usr/bin/env LC_ALL=C setfattr --restore - << $dump} err]} {
+            assert {[regexp {^setfattr: .*: No space left on device$} $err]} "bad error text: $err"
+        } else {
+            error "'No space left on device' error is expected"
+        }
+        umount
+    }
+
+    fstest comment-create-remove-file {create comment and remove a file} {
+        create {
+            foo bar
+        }
+
+        mount
+
+        makeFile "meow" new $mountdir
+        set attr [getExtendedAttributes $mountdir/new]
+        assert {[dict keys $attr] == ""}
+        exec setfattr -n user.comment -v "new comment" $mountdir/new
+        set attr [getExtendedAttributes $mountdir/new]
+        assert {[dict keys $attr] == "user.comment"}
+        assert {[dict get $attr "user.comment"] == "new comment"}
+
+        file delete $mountdir/new
+
+        umount
+    }
+
+    fstest comment-remove-archive {remove archive comment} {
+        create {
+            foo bar
+        }
+
+        mount
+
+        exec setfattr -n user.comment -v "archive comment" $mountdir
+        set attr [getExtendedAttributes $mountdir]
+        assert {[dict keys $attr] == "user.comment"} "comment not listed"
+        assert {[dict get $attr "user.comment"] == "archive comment"} "invalid comment set"
+
+        exec setfattr -x user.comment $mountdir
+        set attr [getExtendedAttributes $mountdir]
+        assert {[dict keys $attr] == ""} "comment not removed"
+
+        exec setfattr -n user.comment -v "archive comment 2" $mountdir
+        set attr [getExtendedAttributes $mountdir]
+        assert {[dict keys $attr] == "user.comment"} "comment not listed after reset"
+        assert {[dict get $attr "user.comment"] == "archive comment 2"} "invalid comment re-set"
+
+        umount
+
+        set comm [getZipComments $fname]
+        assert {[dict get $comm ""] eq "archive comment 2"} "unzip: comment not set"
+
+        mount
+
+        set attr [getExtendedAttributes $mountdir]
+        assert {[dict keys $attr] == "user.comment"} "comment not listed after remount"
+        assert {[dict get $attr "user.comment"] == "archive comment 2"} "invalid comment re-read"
+
+        exec setfattr -x user.comment $mountdir
+        set attr [getExtendedAttributes $mountdir]
+        assert {[dict keys $attr] == ""} "comment not removed secondary"
+
+        umount
+
+        set comm [getZipComments $fname]
+        assert {[dict get $comm ""] eq ""} "unzip: comment not removed"
+    }
+
+    fstest comment-remove-file {remove file comment} {
+        create {
+            foo bar
+        }
+
+        mount
+
+        exec setfattr -n user.comment -v "file comment" $mountdir/foo
+        set attr [getExtendedAttributes $mountdir/foo]
+        assert {[dict keys $attr] == "user.comment"} "comment not listed"
+        assert {[dict get $attr "user.comment"] == "file comment"} "invalid comment set"
+
+        exec setfattr -x user.comment $mountdir/foo
+        set attr [getExtendedAttributes $mountdir/foo]
+        assert {[dict keys $attr] == ""} "comment not removed"
+
+        exec setfattr -n user.comment -v "file comment 2" $mountdir/foo
+        set attr [getExtendedAttributes $mountdir/foo]
+        assert {[dict keys $attr] == "user.comment"} "comment not listed after reset"
+        assert {[dict get $attr "user.comment"] == "file comment 2"} "invalid comment re-set"
+
+        umount
+
+        set comm [getZipComments $fname]
+        assert {[dict get $comm "foo"] eq "file comment 2"} "unzip: comment not set"
+
+        mount
+
+        set attr [getExtendedAttributes $mountdir/foo]
+        assert {[dict keys $attr] == "user.comment"} "comment not listed after remount"
+        assert {[dict get $attr "user.comment"] == "file comment 2"} "invalid comment re-read"
+
+        exec setfattr -x user.comment $mountdir/foo
+        set attr [getExtendedAttributes $mountdir/foo]
+        assert {[dict keys $attr] == ""} "comment not removed secondary"
+
+        umount
+
+        set comm [getZipComments $fname]
+        assert {![dict exists $comm "foo"]} "unzip: comment not removed"
+    }
+
+    fstest special-fifo-read-infozip {read zipped FIFOs (Info-ZIP)} {
+        use data/fifo.zip
+        mount -r
+
+        assert {[file type $mountdir/fifo] eq "file"}
+        set f [open $mountdir/fifo r]
+        set content1 [read $f]
+        close $f
+
+        assert {[file type $mountdir/-] eq "file"}
+        set f [open $mountdir/- r]
+        set content2 [read $f]
+        close $f
+
+        umount
+
+        assert {$content1 eq "FIFO content\n"} "bad zipped FIFO content"
+        assert {$content2 eq "stdin content\n"} "bad zipped stdin content"
+    }
+
+    fstest special-fifo-read-pkware {read zipped FIFOs (PKWARE)} {
+        use data/pkware-specials.zip
+
+        mount -r
+
+        assert {[file type $mountdir/fifo] eq "fifo"}
+
+        umount
+    }
+
+    fstest special-fifo-create {create and save FIFO} {
+        mount
+
+        exec mknod $mountdir/fifo p
+        assert {[file type $mountdir/fifo] eq "fifo"} "bad created node type"
+        umount
+
+        set info [getZipItemInfo $fname fifo]
+        eassert [dict get $info unix_perms] eq 010664 "bad UNIX permissions"
+        eassert [dict get $info dos_perms]  eq 00     "bad DOS permissions"
+
+        mount
+        assert {[file type $mountdir/fifo] eq "fifo"} "reopen: bad node type"
+        umount
+    }
+
+    fstest special-device-read {read device nodes from archive} {
+        use data/pkware-specials.zip
+
+        mount -r
+
+        assert {[file type $mountdir/block] eq "blockSpecial"}
+        lassign [exec stat -c "%t %T" $mountdir/block] maj min
+        assert {$maj == 8 && $min == 1} "failed block device numbers $maj, $min"
+
+        assert {[file type $mountdir/char] eq "characterSpecial"}
+        lassign [exec stat -c "%t %T" $mountdir/char] maj min
+        assert {$maj == 4 && $min == 0} "failed char device numbers $maj, $min"
+
+        umount
+    }
+
+    fstest special-device-create {create and save device node} {
+        mount -o allow_root
+
+        exec sudo mknod $mountdir/block b 8 255
+        assert {[file type $mountdir/block] eq "blockSpecial"}
+        lassign [exec stat -c "%t %T" $mountdir/block] maj min
+        assert {$maj == 8 && $min eq "ff"} "create: failed block device numbers $maj, $min"
+
+        exec sudo mknod $mountdir/char  c 4 63
+        assert {[file type $mountdir/char] eq "characterSpecial"}
+        lassign [exec stat -c "%t %T" $mountdir/char] maj min
+        assert {$maj == 4 && $min == "3f"} "create: failed char device numbers $maj, $min"
+
+        umount
+
+        set info [getZipItemInfo $fname block]
+        eassert [dict get $info unix_perms] eq 060664 "bad UNIX permissions"
+        eassert [dict get $info dos_perms]  eq 00     "bad DOS permissions"
+
+        set info [getZipItemInfo $fname char]
+        eassert [dict get $info unix_perms] eq 020664 "bad UNIX permissions"
+        eassert [dict get $info dos_perms]  eq 00     "bad DOS permissions"
+
+        mount
+
+        assert {[file type $mountdir/block] eq "blockSpecial"}
+        lassign [exec stat -c "%t %T" $mountdir/block] maj min
+        assert {$maj == 8 && $min == "ff"} "remount: failed block device numbers $maj, $min"
+
+        assert {[file type $mountdir/char] eq "characterSpecial"}
+        lassign [exec stat -c "%t %T" $mountdir/char] maj min
+        assert {$maj == 4 && $min == "3f"} "remount: failed char device numbers $maj, $min"
+
+        umount
+    } sudo
+
+    fstest special-socket-read {read socket from archive} {
+        use data/pkware-specials.zip
+
+        mount -r
+
+        assert {[file type $mountdir/socket] eq "socket"}
+
+        umount
+    }
+
+    fstest special-socket-create {create and save socket} {
+        mount
+
+        set p [exec socat UNIX-LISTEN:$mountdir/socket,unlink-close=0 - &]
+        after 500
+        exec socat - UNIX-CONNECT:$mountdir/socket << ""
+        wait $p
+        assert {[file type $mountdir/socket] eq "socket"} "socket not created"
+
+        umount
+
+        set info [getZipItemInfo $fname socket]
+        eassert [dict get $info unix_perms] eq 140775 "bad UNIX permissions"
+        eassert [dict get $info dos_perms]  eq 00     "bad DOS permissions"
+
+        mount
+        assert {[file type $mountdir/socket] eq "socket"} "socket not read"
+        umount
+    }
+
+    fstest pkzip-compatibility-regular {PkZip compatibility: regular file} {
+        mount
+        makeFile "file content" regular $mountdir
+        umount
+
+        pkzipExtract
+        set f [open $tmpdir/extract/regular r]
+        set data [read $f]
+        close $f
+
+        assert {$data eq "file content"} "bad extracted file content: $data"
+    } pkzip
+
+    fstest pkzip-compatibility-fifo {PkZip compatibility: FIFO} {
+        mount
+        exec mknod $mountdir/fifo p
+        umount
+
+        pkzipExtract
+        assert {[file type $tmpdir/extract/fifo] eq "fifo"} "bad extracted node type"
+    } pkzip
+
+    fstest pkzip-compatibility-socket {PkZip compatibility: socket} {
+        mount
+        set p [exec socat UNIX-LISTEN:$mountdir/socket,unlink-close=0 - &]
+        after 500
+        exec socat - UNIX-CONNECT:$mountdir/socket << ""
+        wait $p
+        umount
+
+        pkzipExtract
+        assert {[file type $tmpdir/extract/socket] eq "socket"} "bad extracted node type"
+    } pkzip
+
+    fstest pkzip-compatibility-device {PkZip compatibility: device} {
+        mount -o allow_root
+        exec sudo mknod $mountdir/block b 8 255
+        exec sudo mknod $mountdir/char  c 4 63
+        makeFile "file content" regular $mountdir
+        umount
+
+        pkzipExtract sudo
+
+        set fn $tmpdir/extract/block
+        assert {[file type $fn] eq "blockSpecial"}
+        lassign [exec stat -c "%t %T" $fn] maj min
+        assert {$maj == 8 && $min == "ff"} "remount: failed block device numbers $maj, $min"
+
+        set fn $tmpdir/extract/char
+        assert {[file type $fn] eq "characterSpecial"}
+        lassign [exec stat -c "%t %T" $fn] maj min
+        assert {$maj == 4 && $min == "3f"} "remount: failed char device numbers $maj, $min"
+
+        exec sudo rm -rf $tmpdir/extract
+    } {sudo pkzip}
+
+    fstest pkzip-compatibility-symlink {PkZip compatibility: symlink} {
+        mount
+        file link -symbolic $mountdir/symlink /dev/null
+        umount
+
+        pkzipExtract
+        assert {[file type $tmpdir/extract/symlink] eq "link"}
+        assert {[file readlink $tmpdir/extract/symlink] eq "/dev/null"} "invalid link content"
+    } pkzip
+
+    fstest pkzip-compatibility-permissions {PkZip compatibility: owner and permissions} {
+        mount -o allow_root
+        makeFile "file content" regular $mountdir
+        exec chmod 444 $mountdir/regular
+        exec sudo chown 0:0 $mountdir/regular
+        umount
+
+        pkzipExtract sudo
+        lassign [exec stat -c "%a %u %g" $tmpdir/extract/regular] perm uid gid
+        assert {$perm eq "444"}
+        assert {$uid == 0}
+        assert {$gid == 0}
+    } {sudo pkzip}
+
+    fstest pkzip-compatibility-symlink-rename {PkZip compatibility: PKWARE format symlink rename and save} {
+        use data/pkware-symlink.zip
+        mount
+        file rename $mountdir/symlink $mountdir/symlink2
+        umount
+
+        pkzipExtract
+
+        assert {[file type $tmpdir/extract/symlink2] eq "link"}
+        assert {[file readlink $tmpdir/extract/symlink2] eq "regular"} "invalid link content"
+    } pkzip
+
+    fstest hardlink-pkzip-read {Read support hardlinks created by PkZip} {
+        use data/pkware-specials.zip
+        mount -r -o use_ino
+        # two initially hard-linked symlinks
+        assert {[file type      $mountdir/symlink]  eq "link"}
+        assert {[file readlink  $mountdir/symlink]  eq "regular"} "invalid link content"
+        assert {[file type      $mountdir/z-hardlink-symlink] eq "link"}
+        assert {[file readlink  $mountdir/z-hardlink-symlink] eq "regular"} "invalid link content"
+        # hard-linked regular files
+        assert {[file type      $mountdir/regular]      eq "file"}
+        assert {[file type      $mountdir/z-hardlink1]  eq "file"}
+        assert {[file type      $mountdir/z-hardlink2]  eq "file"}
+        file stat               $mountdir/regular     stat0
+        file stat               $mountdir/z-hardlink1 stat1
+        file stat               $mountdir/z-hardlink2 stat2
+        umount
+
+        assert {$stat0(ino) == $stat1(ino)} "file and 1st hardlink inodes must be the same"
+        assert {$stat0(ino) == $stat2(ino)} "file and 2nd hardlink inodes must be the same"
+        eassert $stat0(nlink) == 3 "must be 3 links for double-hardlinked file"
+    }
+
+    fstest hardlink-rw-mode {Check that hardlinks are supported only in read-only mode} {
+        use data/pkware-specials.zip
+        if {![ catch {mount} err opts ] ||
+                [ dict get $opts -errorcode ] ne "NOTMOUNTED"} {
+            error "Mount error is expected"
+        } else {
+            set msg [ stripValgrindOutput [ join $error \n ] ]
+            if {![ regexp {^fuse-zip: unable to open ZIP file: hard links are supported only in read-only mode$} $msg ]} {
+                error "Invalid error message: $msg"
+            }
+        }
+    }
+
+    fstest hardlink-before-target-read {Read support for hardlink before target} {
+        # not zupported by PkZip but supported by fuse-zip :)
+        use data/hlink-before-target.zip
+        mount -r -o use_ino
+        assert {[file type $mountdir/0hlink]   eq "file"}
+        assert {[file type $mountdir/1regular] eq "file"}
+        file stat          $mountdir/0hlink   stat0
+        file stat          $mountdir/1regular stat1
+        umount
+
+        assert {$stat0(ino) == $stat1(ino)} "file and 1st hardlink inodes must be the same"
+    }
+
+    fstest hardlink-chain-read {Read support for hardlink chain} {
+        use data/hlink-chain.zip
+        mount -r -o use_ino
+        assert {[file type $mountdir/0regular] eq "file"}
+        assert {[file type $mountdir/hlink1]   eq "file"}
+        assert {[file type $mountdir/hlink2]   eq "file"}
+        file stat          $mountdir/0regular stat0
+        file stat          $mountdir/hlink1   stat1
+        file stat          $mountdir/hlink2   stat2
+        umount
+
+        assert {$stat0(ino) == $stat1(ino)} "file and 1st hardlink inodes must be the same"
+        assert {$stat0(ino) == $stat2(ino)} "file and 2nd hardlink inodes must be the same"
+        eassert $stat0(nlink) == 3 "must be 3 links for double-hardlinked file"
+    }
+
+    fstest hardlink-dir-read {Read support for directory hardlink} {
+        use data/hlink-dir.zip
+        mount -r -o use_ino
+        eassert [file type $mountdir/dir]   eq "directory" "bad dir type"
+        eassert [file type $mountdir/hlink] eq "directory" "bad link type"
+        umount
+    }
+
+    fstest hardlink-recursive-one {Hardlink to self} {
+        use data/hlink-recursive-one.zip
+        mount -r -o use_ino
+        assert {![file exists $mountdir/hlink]}
+        umount
+    }
+
+    fstest hardlink-recursive-two {Recursive hardlink chain} {
+        use data/hlink-recursive-two.zip
+        mount -r -o use_ino
+        assert {![file exists $mountdir/hlink1]}
+        assert {![file exists $mountdir/hlink2]}
+        umount
+    }
+
+    fstest hardlink-without-target {Hardlink without a target} {
+        use data/hlink-without-target.zip
+        mount -r -o use_ino
+        assert {![file exists $mountdir/hlink1]}
+        umount
+    }
+
+    fstest hardlink-special-read {Hardlinks to special files} {
+        use data/hlink-special.zip
+        mount -r -o use_ino
+
+        set file1 0block
+        set file2 hlink-block
+        set type blockSpecial
+        eassert [file type $mountdir/$file1] eq $type
+        eassert [file type $mountdir/$file2] eq $type
+        lassign [exec stat -c "%t %T" $mountdir/$file1] maj min
+        assert {$maj == 8 && $min == "ff"} "$file1: failed block device numbers $maj, $min"
+        lassign [exec stat -c "%t %T" $mountdir/$file2] maj min
+        assert {$maj == 8 && $min == "ff"} "$file2: failed block device numbers $maj, $min"
+
+        set file1 0fifo
+        set file2 hlink-fifo
+        set type fifo
+        eassert [file type $mountdir/$file1] eq $type
+        eassert [file type $mountdir/$file2] eq $type
+        file stat          $mountdir/$file1 stat1
+        file stat          $mountdir/$file2 stat2
+        assert {$stat1(ino) == $stat2(ino)} "$file1 and $file2 inodes must be the same"
+
+        set file1 0socket
+        set file2 hlink-socket
+        set type socket
+        eassert [file type $mountdir/$file1] eq $type
+        eassert [file type $mountdir/$file2] eq $type
+        file stat          $mountdir/$file1 stat1
+        file stat          $mountdir/$file2 stat2
+        assert {$stat1(ino) == $stat2(ino)} "$file1 and $file2 inodes must be the same"
+
+        umount
+    }
+
+    fstest hardlink-symlink-read {Hardlink to symlink} {
+        use data/hlink-symlink.zip
+        mount -r -o use_ino
+
+        eassert [file type $mountdir/0regular] eq file "bad regular file type"
+
+        eassert [file type $mountdir/1symlink] eq "link" "bad symlink type"
+        eassert [file readlink $mountdir/1symlink] eq "0regular" "invalid symlink content"
+        file stat $mountdir/1symlink stat1
+
+        eassert [file type $mountdir/hlink] eq "link" "bad hardlink-symlink type"
+        eassert [file readlink $mountdir/hlink] eq "0regular" "invalid hlink-symlink content"
+        file stat $mountdir/hlink stat2
+
+        umount
+
+        assert {$stat1(ino) == $stat2(ino)} "symlink inodes must be the same"
+    }
+
+    fstest hardlink-relative-read {Hardlink with relative path} {
+        use data/hlink-relative.zip
+        mount -r -o use_ino
+        assert {[file type $mountdir/UP/0regular] eq "file"}
+        assert {[file type $mountdir/UP/hlink]    eq "file"}
+        file stat          $mountdir/UP/0regular stat0
+        file stat          $mountdir/UP/hlink    stat1
+        umount
+
+        assert {$stat0(ino) == $stat1(ino)} "file and 1st hardlink inodes must be the same"
+    }
+
+    fstest treat-empty-type-as-regular-file {Treat files with empty type as regular (issue #67)} {
+        file copy data/issue-67-empty-file-type.zip $tmpdir/issue-67.zip
+        set fname $tmpdir/issue-67.zip
+        mount -r
+        eassert [file type $mountdir/Hi.txt] eq "file"
+        set f [open $mountdir/Hi.txt r]
+        set data [read $f]
+        close $f
+        eassert $data eq "Hi there!\n"
+        umount
+    }
+
+    fstest dir-nlink {Check st_nlink for directories} {
+        create {
+            no-subdir/1 1
+            1-subdir/subdir/2 2
+            2-subdirs/subdir1/3 3
+            2-subdirs/subdir2/4 4
+        }
+        mount
+
+        file stat $mountdir/no-subdir stat
+        eassert $stat(nlink) == 2 "must be 2 links for 0 subdirs"
+        file stat $mountdir/1-subdir stat
+        eassert $stat(nlink) == 3 "must be 3 links for 1 subdir"
+        file stat $mountdir/2-subdirs stat
+        eassert $stat(nlink) == 4 "must be 4 links for 2 subdirs"
+
+        file mkdir $mountdir/no-subdir/new-subdir
+        file stat $mountdir/no-subdir stat
+        eassert $stat(nlink) == 3 "must be 3 links for 1 subdir (after creation)"
+
+        file delete -force $mountdir/1-subdir/subdir
+        file stat $mountdir/1-subdir stat
+        eassert $stat(nlink) == 2 "must be 2 links for 0 subdirs (after removal)"
+
+        umount
+    }
+
     finalize
 }
-namespace delete ::util::test
+namespace delete ::fusezip::test
 
 # vim: set ft=tcl:

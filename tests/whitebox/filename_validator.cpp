@@ -1,3 +1,22 @@
+////////////////////////////////////////////////////////////////////////////
+//  Copyright (C) 2013-2021 by Alexander Galanin                          //
+//  al@galanin.nnov.ru                                                    //
+//  http://galanin.nnov.ru/~al                                            //
+//                                                                        //
+//  This program is free software: you can redistribute it and/or modify  //
+//  it under the terms of the GNU General Public License as published by  //
+//  the Free Software Foundation, either version 3 of the License, or     //
+//  (at your option) any later version.                                   //
+//                                                                        //
+//  This program is distributed in the hope that it will be useful,       //
+//  but WITHOUT ANY WARRANTY; without even the implied warranty of        //
+//  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the         //
+//  GNU General Public License for more details.                          //
+//                                                                        //
+//  You should have received a copy of the GNU General Public License     //
+//  along with this program.  If not, see <https://www.gnu.org/licenses/>.//
+////////////////////////////////////////////////////////////////////////////
+
 #include "../config.h"
 
 #include <fuse.h>
@@ -32,9 +51,17 @@ struct zip *zip_open(const char *, int, int *) {
     return NULL;
 }
 
-int zip_error_to_str(char *, zip_uint64_t, int, int) {
+void zip_error_init_with_code(zip_error_t *, int) {
     assert(false);
-    return 0;
+}
+
+const char *zip_error_strerror(zip_error_t *) {
+    assert(false);
+    return NULL;
+}
+
+void zip_error_fini(zip_error_t *) {
+    assert(false);
 }
 
 const char *zip_get_name(struct zip *, zip_uint64_t, zip_flags_t) {
@@ -114,6 +141,24 @@ const char *zip_strerror(struct zip *) {
 const char *zip_file_strerror(struct zip_file *) {
     assert(false);
     return NULL;
+}
+
+const char *zip_get_archive_comment(zip_t *, int *, zip_flags_t) {
+    assert(false);
+    return NULL;
+}
+
+int zip_set_archive_comment(zip_t *, const char *, zip_uint16_t) {
+    return 0;
+}
+
+const char *zip_file_get_comment(zip_t *, zip_uint64_t, zip_uint32_t *, zip_flags_t) {
+    assert(false);
+    return NULL;
+}
+
+int zip_file_set_comment(zip_t *, zip_uint64_t, const char *, zip_uint16_t, zip_flags_t) {
+    return 0;
 }
 
 void checkValidationException(const char *fname, const char *prefix) {

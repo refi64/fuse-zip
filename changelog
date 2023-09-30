@@ -1,3 +1,82 @@
+2021-01-31 Alexander Galanin <al@galanin.nnov.ru>
+
+	* Released 0.7.2:
+	- Allow pkg-config binary override (patch from François Degros).
+	- Fix compiler warning (patch from thanhminhmr).
+	- Add .gitignore since BitBucket repository are now in git format.
+
+2020-06-20 Alexander Galanin <al@galanin.nnov.ru>
+
+	* Released 0.7.1:
+	- Issue #67: treat file nodes with zero file type bits as regular files.
+
+2019-09-08 Alexander Galanin <al@galanin.nnov.ru>
+
+	* Released 0.7.0:
+	- PKWARE NTFS extra field support. Support high-precision timestamps
+	via this extension.
+	- PKWARE NTFS extra field: preserve 'reserved' field and unknown tags.
+	- Full read support for PKWARE UNIX extra field features. Write
+	support for all PKWARE UNIX features except hard links.
+	- Full support for block/character devices, sockets and FIFOs.
+	- Read only support for hard links.
+	- Support for file and archive comments.
+	- Work-around for PKWARE's interpretation of 'version made by' field.
+	- Support FUSE 2.9.
+	- Update ctime on rename.
+	- Now requires C++11-compilant compiler to build.
+
+2019-08-03 Alexander Galanin <al@galanin.nnov.ru>
+
+	* Released 0.6.2:
+	- Fixed parsing of Info-Zip New Unix extra field if size of UID or GID
+	is less than size of uid_t or gid_t.
+
+2019-07-17 Alexander Galanin <al@galanin.nnov.ru>
+
+	* Released 0.6.1:
+	- Fixed extra field timestamps parsing on 64-bit systems.
+	- Fixed compilation with gcc 8.3.0 (patch from Michael Davis), closes
+	issue #55.
+
+2019-03-12 Alexander Galanin <al@galanin.nnov.ru>
+
+	* Released 0.6.0:
+	- Fixed incompatibility with iconv module.
+	- inode numbers is now unique.
+	- Include libzip version on --version output.
+	- Set minimum libzip version to 1.0, remove deprecated functions usage.
+	- Fixed extended set of compiler warnings (type conversion, old style
+	casts).
+	- Added debug utils.
+
+2018-12-01 Alexander Galanin <al@galanin.nnov.ru>
+	* Released 0.5.0:
+	- #54: Force open in read-only mode if archive file or its parent
+	directory is not writable.
+
+2018-02-04 Alexander Galanin <al@galanin.nnov.ru>
+	* Released 0.4.5:
+	- #52: Print error message and exit on nonexistent file in read-only mode.
+	- #51: Check return value of chdir().
+	- Add Reiner Herrmann's patch to make the build reproducible.
+	- Fixed errors found by static code analysis.
+
+2017-12-04 Alexander Galanin <al@galanin.nnov.ru>
+	* Released 0.4.4:
+	- Fixed problem with README installation.
+
+2017-12-03 Alexander Galanin <al@galanin.nnov.ru>
+	* Released 0.4.3:
+	- License changed to GPLv3 or later because LGPLv3 is too confusing.
+	- Support mknod() system call.
+	- Fixed out of bounds write on sparse file (issue #50).
+	- Fixed timestamp and file attribute fields saving into archive.
+
+2016-02-28 Alexander Galanin <al@galanin.nnov.ru>
+	* Released 0.4.2:
+	- Properly handle ZIP_SOURCE_SUPPORTS call introduced in libzip 1.0 (fixes #46)
+
 2014-07-04 Alexander Galanin <al@galanin.nnov.ru>
 	* Released 0.4.1:
 	- Fixed problem with subdir module support.

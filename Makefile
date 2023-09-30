@@ -1,3 +1,27 @@
+############################################################################
+##  Copyright (C) 2008-2021 by Alexander Galanin                          ##
+##  al@galanin.nnov.ru                                                    ##
+##  http://galanin.nnov.ru/~al                                            ##
+##                                                                        ##
+##  Contributors:                                                         ##
+##    Anthony J. Bentley <anthony@anjbe.name>, 2015                       ##
+##    Ricardo Rosales <missingcharacter@gmail.com>, 2015                  ##
+##    François Degros <fdegros@chromium.org>, 2020                        ##
+##                                                                        ##
+##  This program is free software: you can redistribute it and/or modify  ##
+##  it under the terms of the GNU General Public License as published by  ##
+##  the Free Software Foundation, either version 3 of the License, or     ##
+##  (at your option) any later version.                                   ##
+##                                                                        ##
+##  This program is distributed in the hope that it will be useful,       ##
+##  but WITHOUT ANY WARRANTY; without even the implied warranty of        ##
+##  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the         ##
+##  GNU General Public License for more details.                          ##
+##                                                                        ##
+##  You should have received a copy of the GNU General Public License     ##
+##  along with this program.  If not, see <https://www.gnu.org/licenses/>.##
+############################################################################
+
 DEST=fuse-zip
 prefix=/usr/local
 exec_prefix=$(prefix)
@@ -7,18 +31,19 @@ docdir=$(datarootdir)/doc/$(DEST)
 mandir=$(datarootdir)/man
 man1dir=$(mandir)/man1
 manext=.1
-LIBS=-Llib -lfusezip $(shell pkg-config fuse --libs) $(shell pkg-config libzip --libs)
+LIBS=-Llib -lfusezip $(shell $(PKG_CONFIG) fuse --libs) $(shell $(PKG_CONFIG) libzip --libs)
 LIB=lib/libfusezip.a
-CXXFLAGS=-g -O0 -Wall -Wextra
-RELEASE_CXXFLAGS=-O2 -Wall -Wextra
-FUSEFLAGS=$(shell pkg-config fuse --cflags)
-ZIPFLAGS=$(shell pkg-config libzip --cflags)
+CXXFLAGS=-g -O0 -Wall -Wextra -Wconversion -Wsign-conversion -Wlogical-op -Wshadow -pedantic -Werror -std=c++11
+RELEASE_CXXFLAGS=-O2 -Wall -Wextra -Wconversion -Wsign-conversion -Wlogical-op -Wshadow -pedantic -Werror -std=c++11
+PKG_CONFIG?=pkg-config
+FUSEFLAGS=$(shell $(PKG_CONFIG) fuse --cflags)
+ZIPFLAGS=$(shell $(PKG_CONFIG) libzip --cflags)
 SOURCES=main.cpp
 OBJECTS=$(SOURCES:.cpp=.o)
 MANSRC=fuse-zip.1
 MAN=fuse-zip$(manext).gz
 CLEANFILES=$(OBJECTS) $(MAN)
-DOCFILES=README changelog
+DOCFILES=README.md changelog
 INSTALL=install
 INSTALL_PROGRAM=$(INSTALL)
 INSTALL_DATA=$(INSTALL) -m 644
@@ -33,7 +58,6 @@ $(DEST): $(OBJECTS) $(LIB)
 	$(CXX) $(OBJECTS) $(LDFLAGS) $(LIBS) \
 	    -o $@
 
-# main.cpp must be compiled separately with FUSEFLAGS
 main.o: main.cpp
 	$(CXX) -c $(CXXFLAGS) $(FUSEFLAGS) $(ZIPFLAGS) $< \
 	    -Ilib \

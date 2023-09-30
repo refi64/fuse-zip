@@ -1,7 +1,7 @@
 .\" '\" t
 .\" ** The above line should force tbl to be a preprocessor **
 .\" Man page for fuse-zip
-.TH "fuse-zip" "1" "January 2014" "FUSE filesystem to read and modify ZIP archives" "FUSE filesystem to read and modify ZIP archives"
+.TH "fuse-zip" "1" "July 2019" "FUSE filesystem to read and modify ZIP archives" "FUSE filesystem to read and modify ZIP archives"
 .SH "NAME"
 fuse\-zip \- a FUSE filesystem for zip archives with write support
 .SH "SYNOPSIS"
@@ -22,27 +22,29 @@ print version
 open archive in read\-only mode
 .TP
 \fB-o opt[,opt...]\fP
-mount options
+mount options (refer to
+.BR mount.fuse (8)
+for details)
 .TP
 \fB-f\fP
 don't detach from terminal
 .TP
 \fB-d\fP
 turn on debugging, also implies \-f
-.PP
-If you want to specify character set conversion for file names in archive,
-use the following fusermount options:
-
-  \-omodules=iconv,from_code=$charset1,to_code=$charset2
-
-See FUSE documentation for details.
+.SS "Specific mount options:"
+.TP
+\fBforce_precise_time\fP
+By default high precision timestamp is saved to archive only for new
+files or files with known creation time. You can force high-precision time
+saving by specifying '-o force_precise_time' option. In this case creation time
+will be equal to a first known file modification time.
 .SH "DESCRIPTION"
 .B fuse\-zip
-is a fuse filesystem, that enables any program to work with a ZIP archive as though it is a plain directory.
+is a FUSE filesystem, that enables any program to work with a ZIP archive as though it is a plain directory.
 Unlike KIO or Gnome VFS, it can be used in any application without modifications.
 
 Unlike other FUSE filesystems, only fuse\-zip provides write support to ZIP archives.
-Also, fuse\-zip is faster that all known implementations on large archives with many files. 
+Also, fuse\-zip is faster than all known implementations on large archives with many files. 
 
 Since version 0.3.0 fuse-zip has support for absolute and parent-relative paths
 in file names, but only in read-only mode (-r command line switch). Absolute
@@ -50,9 +52,24 @@ paths are displayed under "ROOT" directory, every ".." in path replaced by "UP"
 in directory name and "normal" files are placed under "CUR" directory.
 
 Support for UNIX file permissions and owner information has been added in
-version 0.4. See
+version 0.4.0. See
 .B PERMISSIONS
 for details.
+
+Since version 0.5.0 fuse-zip forces open in read-only mode if archive file or
+its parent directory is not writable.
+
+File/archive comments are supported since version 0.7.0. To read/modify file
+comment use extended attribute "user.comment". Archive comment is accessible
+via mount point's extended attribute.
+
+If you want to specify character set conversion for file names in archive,
+use the following fusermount options:
+
+  \-omodules=iconv,from_code=$charset1,to_code=$charset2
+
+See FUSE documentation for details.
+
 .SH "USAGE"
 General usage would look like this
 
@@ -74,10 +91,11 @@ Access check will not be performed unless
 .if !'po4a'hide' .I /var/log/user.log
 see this file in case any errors occur
 .SH "SEE ALSO"
-.BR fusermount (1).
+.BR fusermount (1),
+.BR mount.fuse (8).
 .SH "LICENSE"
 .
-This is Free Software; this software is licensed under the LGPL version 3, as published by the Free Software Foundation, or later.
+This is Free Software; this software is licensed under the GPL version 3, as published by the Free Software Foundation, or later.
 There is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 .
 .SH "AUTHORS"
